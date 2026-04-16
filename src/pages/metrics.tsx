@@ -1,23 +1,24 @@
 import { useEffect, useState } from 'react';
 import { useVinyanStore } from '@/store/vinyan-store';
+import { api } from '@/lib/api-client';
+import { PageHeader } from '@/components/ui/page-header';
 
 export default function Metrics() {
   const metrics = useVinyanStore((s) => s.metrics);
-  const [prometheus, setPrometheus] = useState<Record<string, number | string> | null>(null);
+  const [prometheus, setPrometheus] = useState<Record<string, number>>({});
 
   useEffect(() => {
-    fetchPrometheus();
-    const timer = setInterval(fetchPrometheus, 10_000);
-    return () => clearInterval(timer);
+    loadPrometheus();
+    const t = setInterval(loadPrometheus, 10_000);
+    return () => clearInterval(t);
   }, []);
 
-  async function fetchPrometheus() {
+  async function loadPrometheus() {
     try {
-      const res = await fetch('/api/v1/metrics');
-      const text = await res.text();
-      setPrometheus(parsePrometheusText(text));
+      const text = await api.getPrometheusMetrics();
+      setPrometheus(parsePrometheus(text));
     } catch {
-      // silent
+      /* silent */
     }
   }
 
@@ -27,81 +28,60 @@ export default function Metrics() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h2 className="text-xl font-semibold">Metrics</h2>
-        <p className="text-sm text-text-dim mt-0.5">System metrics — JSON + Prometheus</p>
-      </div>
+      <PageHeader title="Metrics" description="System metrics — Prometheus + JSON" />
 
       {/* Prometheus key metrics */}
-      {prometheus && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <PrometheusCard label="Tasks Total" value={prometheus['vinyan_tasks_total']} />
-          <PrometheusCard label="Oracle Latency" value={prometheus['vinyan_oracle_latency_seconds']} suffix="ms" multiplier={1000} />
-          <PrometheusCard label="Calibration" value={prometheus['vinyan_self_model_calibration']} suffix="%" multiplier={100} />
-          <PrometheusCard
-            label="Avg Duration"
-            value={
-              prometheus['vinyan_task_duration_seconds_count'] && Number(prometheus['vinyan_task_duration_seconds_count']) > 0
-                ? Number(prometheus['vinyan_task_duration_seconds_sum']) / Number(prometheus['vinyan_task_duration_seconds_count'])
-                : undefined
-            }
-            suffix="s"
-          />
-        </div>
-      )}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <PromCard label="Tasks Total" value={prometheus['vinyan_tasks_total']} />
+        <PromCard label="Oracle Latency" value={prometheus['vinyan_oracle_latency_seconds']} mult={1000} suffix="ms" />
+        <PromCard label="Calibration" value={prometheus['vinyan_self_model_calibration']} mult={100} suffix="%" />
+        <PromCard
+          label="Avg Duration"
+          value={
+            prometheus['vinyan_task_duration_seconds_count'] > 0
+              ? prometheus['vinyan_task_duration_seconds_sum'] / prometheus['vinyan_task_duration_seconds_count']
+              : undefined
+          }
+          suffix="s"
+        />
+      </div>
 
-      {/* JSON metrics */}
+      {/* JSON metric sections */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <MetricSection title="Traces" data={metrics.traces} />
-        <MetricSection title="Workers" data={metrics.workers} />
-        <MetricSection title="Rules" data={metrics.rules} />
-        <MetricSection title="Skills" data={metrics.skills} />
-        <MetricSection title="Patterns" data={metrics.patterns} />
-        <MetricSection title="Shadow" data={metrics.shadow} />
-        <MetricSection title="Data Gates" data={metrics.dataGates} />
+        <Section title="Traces" data={metrics.traces} />
+        <Section title="Workers" data={metrics.workers} />
+        <Section title="Rules" data={metrics.rules} />
+        <Section title="Skills" data={metrics.skills} />
+        <Section title="Patterns" data={metrics.patterns} />
+        <Section title="Shadow" data={metrics.shadow} />
+        <Section title="Data Gates" data={metrics.dataGates} />
       </div>
     </div>
   );
 }
 
-function PrometheusCard({
-  label,
-  value,
-  suffix,
-  multiplier,
-}: {
-  label: string;
-  value: unknown;
-  suffix?: string;
-  multiplier?: number;
-}) {
-  const num = value !== undefined ? Number(value) * (multiplier ?? 1) : null;
+function PromCard({ label, value, mult, suffix }: { label: string; value?: number; mult?: number; suffix?: string }) {
+  const v = value !== undefined ? value * (mult ?? 1) : null;
   return (
     <div className="bg-surface rounded-lg border border-border p-4">
       <div className="text-xs text-text-dim uppercase tracking-wider mb-1">{label}</div>
       <div className="text-2xl font-bold tabular-nums">
-        {num !== null && !isNaN(num) ? `${num.toFixed(num > 100 ? 0 : 2)}${suffix ?? ''}` : '--'}
+        {v !== null && !isNaN(v) ? `${v.toFixed(v > 100 ? 0 : 2)}${suffix ?? ''}` : '--'}
       </div>
     </div>
   );
 }
 
-function MetricSection({ title, data }: { title: string; data: Record<string, unknown> }) {
+function Section({ title, data }: { title: string; data: Record<string, unknown> }) {
   return (
     <div className="bg-surface rounded-lg border border-border p-4">
       <div className="text-xs text-text-dim uppercase tracking-wider mb-3">{title}</div>
       <div className="space-y-1.5">
-        {Object.entries(data).map(([key, value]) => (
-          <div key={key} className="flex items-center justify-between text-sm">
-            <span className="text-text-dim">{key}</span>
+        {Object.entries(data).map(([k, v]) => (
+          <div key={k} className="flex items-center justify-between text-sm">
+            <span className="text-text-dim">{k}</span>
             <span className="font-mono tabular-nums">
-              {typeof value === 'boolean'
-                ? value
-                  ? 'true'
-                  : 'false'
-                : typeof value === 'object'
-                  ? JSON.stringify(value)
-                  : String(value)}
+              {typeof v === 'boolean' ? (v ? 'true' : 'false') : typeof v === 'object' ? JSON.stringify(v) : String(v)}
             </span>
           </div>
         ))}
@@ -110,16 +90,15 @@ function MetricSection({ title, data }: { title: string; data: Record<string, un
   );
 }
 
-function parsePrometheusText(text: string): Record<string, number | string> {
-  const metrics: Record<string, number | string> = {};
+function parsePrometheus(text: string): Record<string, number> {
+  const result: Record<string, number> = {};
   for (const line of text.split('\n')) {
     if (line.startsWith('#') || !line.trim()) continue;
-    const match = line.match(/^(\w+)(?:\{[^}]*\})?\s+(.+)$/);
+    const match = line.match(/^([\w:]+)(?:\{[^}]*\})?\s+([\d.eE+-]+)/);
     if (match) {
-      const [, name, val] = match;
-      const num = parseFloat(val);
-      metrics[name] = isNaN(num) ? val : num;
+      const val = parseFloat(match[2]);
+      if (!isNaN(val)) result[match[1]] = val;
     }
   }
-  return metrics;
+  return result;
 }

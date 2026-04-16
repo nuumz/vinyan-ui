@@ -5,9 +5,11 @@ interface UseSSEOptions {
   path: string;
   onEvent: (event: SSEEvent) => void;
   maxRetries?: number;
+  /** Delay connection until true (e.g. wait for auth). */
+  enabled?: boolean;
 }
 
-export function useSSE({ path, onEvent, maxRetries = 5 }: UseSSEOptions) {
+export function useSSE({ path, onEvent, maxRetries = 10, enabled = true }: UseSSEOptions) {
   const [connected, setConnected] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
   const sourceRef = useRef<EventSource | null>(null);
@@ -43,8 +45,8 @@ export function useSSE({ path, onEvent, maxRetries = 5 }: UseSSEOptions) {
 
       setRetryCount((prev) => {
         const next = prev + 1;
-        if (next <= (maxRetries ?? 5)) {
-          const delay = Math.min(1000 * 2 ** prev, 30_000);
+        if (next <= maxRetries) {
+          const delay = Math.min(1000 * 2 ** Math.min(prev, 5), 30_000);
           setTimeout(connect, delay);
         }
         return next;
@@ -58,14 +60,15 @@ export function useSSE({ path, onEvent, maxRetries = 5 }: UseSSEOptions) {
   }, [connect]);
 
   useEffect(() => {
+    if (!enabled) return;
     connect();
     return () => {
       sourceRef.current?.close();
       sourceRef.current = null;
     };
-  }, [connect]);
+  }, [connect, enabled]);
 
-  const failed = retryCount > (maxRetries ?? 5);
+  const failed = retryCount > maxRetries;
   const reconnecting = !connected && retryCount > 0 && !failed;
 
   return { connected, retryCount, reconnect, failed, reconnecting };

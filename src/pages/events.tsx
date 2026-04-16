@@ -1,6 +1,8 @@
 import { useState, useMemo } from 'react';
 import { useVinyanStore } from '@/store/vinyan-store';
-import { cn } from '@/lib/utils';
+import { EventBadge } from '@/components/ui/badge';
+import { PageHeader } from '@/components/ui/page-header';
+import { timeAgo } from '@/lib/utils';
 
 const EVENT_TYPES = [
   'task:start', 'task:complete', 'task:escalate', 'task:timeout',
@@ -25,19 +27,19 @@ export default function Events() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-xl font-semibold">Events</h2>
-          <p className="text-sm text-text-dim mt-0.5">Real-time event stream</p>
-        </div>
-        <button
-          type="button"
-          className="px-3 py-1.5 rounded text-xs text-text-dim hover:text-text hover:bg-white/5 transition-colors"
-          onClick={clearEvents}
-        >
-          Clear
-        </button>
-      </div>
+      <PageHeader
+        title="Events"
+        description="Real-time event stream"
+        actions={
+          <button
+            type="button"
+            className="px-3 py-1.5 rounded text-xs text-text-dim hover:text-text hover:bg-white/5 transition-colors"
+            onClick={clearEvents}
+          >
+            Clear
+          </button>
+        }
+      />
 
       {/* Filters */}
       <div className="flex items-center gap-3 text-xs">
@@ -85,23 +87,4 @@ export default function Events() {
       </div>
     </div>
   );
-}
-
-function EventBadge({ event }: { event: string }) {
-  const color = event.includes('error') || event.includes('fail')
-    ? 'bg-red/10 text-red border-red/30'
-    : event.includes('complete') || event.includes('verdict')
-      ? 'bg-green/10 text-green border-green/30'
-      : event.includes('escalate') || event.includes('timeout')
-        ? 'bg-yellow/10 text-yellow border-yellow/30'
-        : 'bg-accent/10 text-accent border-accent/30';
-  return <span className={cn('px-1.5 py-0.5 rounded text-xs border shrink-0', color)}>{event}</span>;
-}
-
-function timeAgo(ts: number): string {
-  const diff = Math.floor((Date.now() - ts) / 1000);
-  if (diff < 5) return 'now';
-  if (diff < 60) return `${diff}s`;
-  if (diff < 3600) return `${Math.floor(diff / 60)}m`;
-  return `${Math.floor(diff / 3600)}h`;
 }

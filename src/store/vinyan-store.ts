@@ -10,9 +10,13 @@ import {
   type Fact,
   type SSEEvent,
   type EconomyResponse,
+  type ConversationEntry,
+  type TaskResult,
 } from '../lib/api-client';
 
 const MAX_EVENTS = 500;
+const POLL_FAST = 5_000;
+const POLL_SLOW = 30_000;
 
 interface VinyanState {
   // Health
@@ -26,6 +30,7 @@ interface VinyanState {
 
   // Tasks
   tasks: Task[];
+  tasksLoading: boolean;
   fetchTasks: () => Promise<void>;
   submitTask: (body: Record<string, unknown>) => Promise<void>;
   cancelTask: (id: string) => Promise<void>;
@@ -38,6 +43,7 @@ interface VinyanState {
   sessions: Session[];
   fetchSessions: () => Promise<void>;
   createSession: () => Promise<Session | null>;
+  compactSession: (id: string) => Promise<void>;
 
   // Rules
   rules: Rule[];
@@ -51,15 +57,27 @@ interface VinyanState {
   economy: EconomyResponse | null;
   fetchEconomy: () => Promise<void>;
 
+  // Chat (session messages)
+  chatMessages: ConversationEntry[];
+  chatSessionId: string | null;
+  chatSending: boolean;
+  chatPendingClarifications: string[];
+  openChat: (sessionId: string) => Promise<void>;
+  sendChatMessage: (content: string) => Promise<TaskResult | null>;
+  closeChat: () => void;
+
   // Events (SSE)
   events: SSEEvent[];
   handleSSEEvent: (event: SSEEvent) => void;
   clearEvents: () => void;
 
   // Polling
-  _pollTimer: ReturnType<typeof setInterval> | null;
-  startPolling: (intervalMs?: number) => void;
+  _pollTimers: ReturnType<typeof setInterval>[];
+  startPolling: () => void;
   stopPolling: () => void;
+
+  // Refresh all
+  refreshAll: () => Promise<void>;
 }
 
 export const useVinyanStore = create<VinyanState>((set, get) => ({
@@ -79,32 +97,34 @@ export const useVinyanStore = create<VinyanState>((set, get) => ({
   metrics: null,
   fetchMetrics: async () => {
     try {
-      const data = await api.getMetrics();
-      set({ metrics: data });
+      set({ metrics: await api.getMetrics() });
     } catch {
-      // silent — health error covers connectivity
+      /* health covers connectivity */
     }
   },
 
   // Tasks
   tasks: [],
+  tasksLoading: false,
   fetchTasks: async () => {
     try {
+      set({ tasksLoading: true });
       const { tasks } = await api.getTasks();
-      set({ tasks });
+      set({ tasks, tasksLoading: false });
     } catch {
-      // silent
+      set({ tasksLoading: false });
     }
   },
   submitTask: async (body) => {
     await api.submitAsyncTask(body);
-    get().fetchTasks();
+    // Refresh after short delay so backend has time to register
+    setTimeout(() => get().fetchTasks(), 500);
   },
   cancelTask: async (id) => {
     try {
       await api.cancelTask(id);
     } catch {
-      // may fail if already completed
+      /* may already be done */
     }
     get().fetchTasks();
   },
@@ -113,10 +133,9 @@ export const useVinyanStore = create<VinyanState>((set, get) => ({
   workers: [],
   fetchWorkers: async () => {
     try {
-      const { workers } = await api.getWorkers();
-      set({ workers });
+      set({ workers: (await api.getWorkers()).workers });
     } catch {
-      // silent
+      /* silent */
     }
   },
 
@@ -124,10 +143,9 @@ export const useVinyanStore = create<VinyanState>((set, get) => ({
   sessions: [],
   fetchSessions: async () => {
     try {
-      const { sessions } = await api.getSessions();
-      set({ sessions });
+      set({ sessions: (await api.getSessions()).sessions });
     } catch {
-      // silent
+      /* silent */
     }
   },
   createSession: async () => {
@@ -139,15 +157,22 @@ export const useVinyanStore = create<VinyanState>((set, get) => ({
       return null;
     }
   },
+  compactSession: async (id) => {
+    try {
+      await api.compactSession(id);
+      get().fetchSessions();
+    } catch {
+      /* silent */
+    }
+  },
 
   // Rules
   rules: [],
   fetchRules: async () => {
     try {
-      const { rules } = await api.getRules();
-      set({ rules });
+      set({ rules: (await api.getRules()).rules });
     } catch {
-      // silent
+      /* silent */
     }
   },
 
@@ -155,10 +180,9 @@ export const useVinyanStore = create<VinyanState>((set, get) => ({
   facts: [],
   fetchFacts: async () => {
     try {
-      const { facts } = await api.getFacts();
-      set({ facts });
+      set({ facts: (await api.getFacts()).facts });
     } catch {
-      // silent
+      /* silent */
     }
   },
 
@@ -166,40 +190,108 @@ export const useVinyanStore = create<VinyanState>((set, get) => ({
   economy: null,
   fetchEconomy: async () => {
     try {
-      const data = await api.getEconomy();
-      set({ economy: data });
+      set({ economy: await api.getEconomy() });
     } catch {
-      // silent
+      /* silent */
     }
   },
 
-  // Events
+  // Chat
+  chatMessages: [],
+  chatSessionId: null,
+  chatSending: false,
+  chatPendingClarifications: [],
+  openChat: async (sessionId) => {
+    set({ chatSessionId: sessionId, chatMessages: [], chatSending: false, chatPendingClarifications: [] });
+    try {
+      const { messages, session } = await api.getMessages(sessionId);
+      set({ chatMessages: messages, chatPendingClarifications: session?.pendingClarifications ?? [] });
+    } catch {
+      /* silent — session may be empty */
+    }
+  },
+  sendChatMessage: async (content) => {
+    const sessionId = get().chatSessionId;
+    if (!sessionId) return null;
+    set({ chatSending: true });
+    try {
+      const { task, session } = await api.sendMessage(sessionId, content);
+      // Reload full history after response
+      const { messages } = await api.getMessages(sessionId);
+      set({
+        chatMessages: messages,
+        chatSending: false,
+        chatPendingClarifications: session?.pendingClarifications ?? [],
+      });
+      get().fetchSessions();
+      return task;
+    } catch {
+      set({ chatSending: false });
+      return null;
+    }
+  },
+  closeChat: () => {
+    set({ chatSessionId: null, chatMessages: [], chatPendingClarifications: [] });
+  },
+
+  // Events — SSE pushes here; also triggers store updates on task/worker events
   events: [],
   handleSSEEvent: (event) => {
     set((state) => {
       const next = [event, ...state.events];
       return { events: next.length > MAX_EVENTS ? next.slice(0, MAX_EVENTS) : next };
     });
+
+    // Auto-refresh relevant data when we get lifecycle events from SSE
+    const e = event.event;
+    if (e === 'task:complete' || e === 'task:start' || e === 'task:escalate' || e === 'task:timeout') {
+      get().fetchTasks();
+    }
+    if (e === 'worker:dispatch' || e === 'worker:complete' || e === 'worker:error') {
+      get().fetchWorkers();
+    }
   },
   clearEvents: () => set({ events: [] }),
 
-  // Polling
-  _pollTimer: null,
-  startPolling: (intervalMs = 30_000) => {
-    const { fetchHealth, fetchMetrics } = get();
-    fetchHealth();
-    fetchMetrics();
-    const timer = setInterval(() => {
-      get().fetchHealth();
-      get().fetchMetrics();
-    }, intervalMs);
-    set({ _pollTimer: timer });
+  // Polling — health/metrics fast, data slow
+  _pollTimers: [],
+  startPolling: () => {
+    const s = get();
+    s.stopPolling();
+
+    // Initial fetch
+    s.refreshAll();
+
+    const timers = [
+      setInterval(() => {
+        get().fetchHealth();
+        get().fetchMetrics();
+      }, POLL_FAST),
+      setInterval(() => {
+        get().fetchTasks();
+        get().fetchWorkers();
+        get().fetchEconomy();
+      }, POLL_SLOW),
+    ];
+    set({ _pollTimers: timers });
   },
   stopPolling: () => {
-    const timer = get()._pollTimer;
-    if (timer) {
-      clearInterval(timer);
-      set({ _pollTimer: null });
-    }
+    for (const t of get()._pollTimers) clearInterval(t);
+    set({ _pollTimers: [] });
+  },
+
+  // Refresh all at once
+  refreshAll: async () => {
+    const s = get();
+    await Promise.allSettled([
+      s.fetchHealth(),
+      s.fetchMetrics(),
+      s.fetchTasks(),
+      s.fetchWorkers(),
+      s.fetchSessions(),
+      s.fetchRules(),
+      s.fetchFacts(),
+      s.fetchEconomy(),
+    ]);
   },
 }));

@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from 'react-router-dom';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import {
   LayoutDashboard,
   ListTodo,
@@ -11,10 +11,13 @@ import {
   Globe,
   BarChart3,
   Wallet,
+  KeyRound,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useVinyanStore } from '@/store/vinyan-store';
 import { useSSE } from '@/lib/use-sse';
+import { ErrorBoundary } from '@/components/error-boundary';
+import { bootstrapAuth, hasApiToken } from '@/lib/api-client';
 
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Overview' },
@@ -35,15 +38,22 @@ export default function AppLayout() {
   const health = useVinyanStore((s) => s.health);
   const healthError = useVinyanStore((s) => s.healthError);
   const handleSSEEvent = useVinyanStore((s) => s.handleSSEEvent);
+  const [ready, setReady] = useState(false);
 
+  // Bootstrap auth then start polling
   useEffect(() => {
-    startPolling();
+    bootstrapAuth().then(() => {
+      setReady(true);
+      startPolling();
+    });
     return () => stopPolling();
   }, [startPolling, stopPolling]);
 
+  // SSE connects only after ready
   const { connected, failed, reconnecting, reconnect } = useSSE({
     path: '/api/v1/events',
     onEvent: handleSSEEvent,
+    enabled: ready,
   });
 
   const uptimeStr = () => {
@@ -106,7 +116,7 @@ export default function AppLayout() {
                 )}
               />
               <span className="text-text-dim">
-                {connected ? 'SSE connected' : reconnecting ? 'Reconnecting...' : 'SSE disconnected'}
+                {!ready ? 'Connecting...' : connected ? 'Connected' : reconnecting ? 'Reconnecting...' : 'Disconnected'}
               </span>
               {failed && (
                 <button
@@ -121,11 +131,17 @@ export default function AppLayout() {
             {health && <span className="text-text-dim">Uptime: {uptimeStr()}</span>}
             {healthError && <span className="text-red">{healthError}</span>}
           </div>
+          <div className="flex items-center gap-1.5 text-xs">
+            <KeyRound size={12} className={hasApiToken() ? 'text-green' : 'text-text-dim'} />
+            <span className="text-text-dim">{hasApiToken() ? 'Auth OK' : 'No auth'}</span>
+          </div>
         </header>
 
         {/* Content */}
         <main className="flex-1 overflow-auto p-6">
-          <Outlet />
+          <ErrorBoundary>
+            <Outlet />
+          </ErrorBoundary>
         </main>
       </div>
     </div>

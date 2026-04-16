@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useVinyanStore } from '@/store/vinyan-store';
 import { cn } from '@/lib/utils';
+import { PageHeader } from '@/components/ui/page-header';
 
 export default function Economy() {
   const economy = useVinyanStore((s) => s.economy);
@@ -19,10 +20,7 @@ export default function Economy() {
   if (!economy.enabled) {
     return (
       <div className="space-y-4">
-        <div>
-          <h2 className="text-xl font-semibold">Economy</h2>
-          <p className="text-sm text-text-dim mt-0.5">Budget, costs, and market</p>
-        </div>
+        <PageHeader title="Economy" description="Budget, costs, and market" />
         <div className="bg-surface rounded-lg border border-border p-8 text-center text-text-dim text-sm">
           Economy OS not enabled. Set <code className="bg-bg px-1 rounded text-xs">economy.enabled = true</code> in vinyan.json.
         </div>
@@ -32,10 +30,7 @@ export default function Economy() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h2 className="text-xl font-semibold">Economy</h2>
-        <p className="text-sm text-text-dim mt-0.5">Budget utilization and cost tracking</p>
-      </div>
+      <PageHeader title="Economy" description="Budget utilization and cost tracking" />
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {/* Budget Utilization */}

@@ -1,5 +1,7 @@
 import { useMemo } from 'react';
 import { useVinyanStore } from '@/store/vinyan-store';
+import { PageHeader } from '@/components/ui/page-header';
+import { EmptyState } from '@/components/ui/empty-state';
 
 export default function Peers() {
   const events = useVinyanStore((s) => s.events);
@@ -11,16 +13,14 @@ export default function Peers() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h2 className="text-xl font-semibold">Peers</h2>
-        <p className="text-sm text-text-dim mt-0.5">A2A peer activity</p>
-      </div>
+      <PageHeader title="Peers" description="A2A peer activity" />
 
       <div className="bg-surface rounded-lg border border-border p-4">
         {peerEvents.length === 0 ? (
-          <div className="text-sm text-text-dim text-center py-8">
-            No peer events — A2A connections will appear here when <code className="bg-bg px-1 rounded text-xs">network.instances.enabled</code> is set
-          </div>
+          <EmptyState
+            message="No peer events"
+            hint="network.instances.enabled"
+          />
         ) : (
           <div className="space-y-2">
             {peerEvents.slice(0, 50).map((e, i) => (

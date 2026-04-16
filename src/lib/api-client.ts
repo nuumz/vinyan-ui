@@ -112,6 +112,7 @@ export interface Fact {
   oracleName: string;
   confidence: number;
   verifiedAt: number;
+  sourceFile: string;
 }
 
 export interface EconomyResponse {
@@ -138,13 +139,82 @@ export interface SSEEvent {
   ts: number;
 }
 
+export interface ConversationEntry {
+  role: 'user' | 'assistant';
+  content: string;
+  taskId: string;
+  timestamp: number;
+  thinking?: string;
+  toolsUsed?: string[];
+  tokenEstimate: number;
+}
+
+export interface SessionDetail {
+  id: string;
+  pendingClarifications: string[];
+}
+
+// ── Auth token ────────────────────────────────────────
+
+let _token: string | null = null;
+let _bootstrapped = false;
+
+export function setApiToken(token: string | null) {
+  _token = token;
+  if (token) localStorage.setItem('vinyan-token', token);
+  else localStorage.removeItem('vinyan-token');
+}
+
+/**
+ * Auto-fetch token from backend bootstrap endpoint (localhost only).
+ * Called once on app startup — no manual paste needed.
+ */
+export async function bootstrapAuth(): Promise<boolean> {
+  if (_bootstrapped) return hasApiToken();
+  _bootstrapped = true;
+
+  // Already have a token? Keep it.
+  if (hasApiToken()) return true;
+
+  try {
+    const res = await fetch(`${API}/auth/bootstrap`);
+    if (res.ok) {
+      const { token } = (await res.json()) as { token: string };
+      if (token) {
+        setApiToken(token);
+        return true;
+      }
+    }
+  } catch {
+    // Backend not reachable — no token
+  }
+  return false;
+}
+
+export function getApiToken(): string | null {
+  if (!_token) _token = localStorage.getItem('vinyan-token');
+  return _token;
+}
+
+export function hasApiToken(): boolean {
+  return !!getApiToken();
+}
+
 // ── Fetch wrapper ──────────────────────────────────────
 
-const API = '/api/v1';
+export const API = '/api/v1';
+
+function authHeaders(method?: string): Record<string, string> {
+  const h: Record<string, string> = {};
+  if (method && method !== 'GET') h['Content-Type'] = 'application/json';
+  const token = getApiToken();
+  if (token) h.Authorization = `Bearer ${token}`;
+  return h;
+}
 
 async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(init?.method),
     ...init,
   });
   if (!res.ok) {
@@ -157,33 +227,48 @@ async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
 // ── Endpoints ──────────────────────────────────────────
 
 export const api = {
+  // Health & metrics (no auth)
   getHealth: () => fetchJSON<HealthResponse>('/health'),
   getMetrics: () => fetchJSON<SystemMetrics>('/metrics?format=json'),
-  getTasks: () => fetchJSON<{ tasks: Task[] }>('/tasks'),
-  getTask: (id: string) => fetchJSON<Task>(`/tasks/${id}`),
-  submitTask: (body: Record<string, unknown>) =>
-    fetchJSON<{ result: TaskResult }>('/tasks', {
-      method: 'POST',
-      body: JSON.stringify(body),
-    }),
-  submitAsyncTask: (body: Record<string, unknown>) =>
-    fetchJSON<{ taskId: string; status: string }>('/tasks/async', {
-      method: 'POST',
-      body: JSON.stringify(body),
-    }),
-  cancelTask: (id: string) =>
-    fetchJSON<{ taskId: string; status: string }>(`/tasks/${id}`, { method: 'DELETE' }),
-  getSessions: () => fetchJSON<{ sessions: Session[] }>('/sessions'),
-  createSession: (source = 'ui') =>
-    fetchJSON<{ session: Session }>('/sessions', {
-      method: 'POST',
-      body: JSON.stringify({ source }),
-    }),
-  getSession: (id: string) => fetchJSON<{ session: Session }>(`/sessions/${id}`),
-  compactSession: (id: string) =>
-    fetchJSON<{ compaction: unknown }>(`/sessions/${id}/compact`, { method: 'POST' }),
+  getPrometheusMetrics: async (): Promise<string> => {
+    const res = await fetch(`${API}/metrics`);
+    return res.text();
+  },
+
+  // Read-only (no auth)
   getWorkers: () => fetchJSON<{ workers: Worker[] }>('/workers'),
   getRules: () => fetchJSON<{ rules: Rule[] }>('/rules'),
   getFacts: () => fetchJSON<{ facts: Fact[] }>('/facts'),
   getEconomy: () => fetchJSON<EconomyResponse>('/economy'),
+
+  // Tasks (auth for mutations)
+  getTasks: () => fetchJSON<{ tasks: Task[] }>('/tasks'),
+  getTask: (id: string) => fetchJSON<Task>(`/tasks/${id}`),
+  submitTask: (body: Record<string, unknown>) =>
+    fetchJSON<{ result: TaskResult }>('/tasks', { method: 'POST', body: JSON.stringify(body) }),
+  submitAsyncTask: (body: Record<string, unknown>) =>
+    fetchJSON<{ taskId: string; status: string }>('/tasks/async', { method: 'POST', body: JSON.stringify(body) }),
+  cancelTask: (id: string) =>
+    fetchJSON<{ taskId: string; status: string }>(`/tasks/${id}`, { method: 'DELETE' }),
+
+  // Sessions (auth required)
+  getSessions: () => fetchJSON<{ sessions: Session[] }>('/sessions'),
+  createSession: (source = 'ui') =>
+    fetchJSON<{ session: Session }>('/sessions', { method: 'POST', body: JSON.stringify({ source }) }),
+  getSession: (id: string) => fetchJSON<{ session: Session }>(`/sessions/${id}`),
+  compactSession: (id: string) =>
+    fetchJSON<{ compaction: unknown }>(`/sessions/${id}/compact`, { method: 'POST' }),
+
+  // Session messages (auth required)
+  getMessages: (sessionId: string, limit?: number) => {
+    const qs = limit ? `?limit=${limit}` : '';
+    return fetchJSON<{ session: SessionDetail; messages: ConversationEntry[] }>(
+      `/sessions/${sessionId}/messages${qs}`,
+    );
+  },
+  sendMessage: (sessionId: string, content: string, options?: { showThinking?: boolean }) =>
+    fetchJSON<{ session: SessionDetail; task: TaskResult }>(`/sessions/${sessionId}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ content, showThinking: options?.showThinking }),
+    }),
 };
