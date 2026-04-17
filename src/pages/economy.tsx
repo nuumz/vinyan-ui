@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { useVinyanStore } from '@/store/vinyan-store';
 import { cn } from '@/lib/utils';
 import { PageHeader } from '@/components/ui/page-header';
+import { CardSkeleton } from '@/components/ui/skeleton';
 
 export default function Economy() {
   const economy = useVinyanStore((s) => s.economy);
@@ -14,7 +15,15 @@ export default function Economy() {
   }, [fetchEconomy]);
 
   if (!economy) {
-    return <div className="text-text-dim text-sm">Loading economy data...</div>;
+    return (
+      <div className="space-y-4">
+        <PageHeader title="Economy" description="Budget, costs, and market" />
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <CardSkeleton />
+          <CardSkeleton />
+        </div>
+      </div>
+    );
   }
 
   if (!economy.enabled) {

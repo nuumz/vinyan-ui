@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useVinyanStore } from '@/store/vinyan-store';
 import { api } from '@/lib/api-client';
 import { PageHeader } from '@/components/ui/page-header';
+import { CardSkeleton } from '@/components/ui/skeleton';
 
 export default function Metrics() {
   const metrics = useVinyanStore((s) => s.metrics);
@@ -23,7 +24,14 @@ export default function Metrics() {
   }
 
   if (!metrics) {
-    return <div className="text-text-dim text-sm">Loading metrics...</div>;
+    return (
+      <div className="space-y-4">
+        <PageHeader title="Metrics" description="System metrics — Prometheus + JSON" />
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {Array.from({ length: 4 }).map((_, i) => <CardSkeleton key={i} />)}
+        </div>
+      </div>
+    );
   }
 
   return (

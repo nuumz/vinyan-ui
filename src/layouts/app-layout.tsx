@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from 'react-router-dom';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   LayoutDashboard,
   ListTodo,
@@ -11,13 +11,13 @@ import {
   Globe,
   BarChart3,
   Wallet,
-  KeyRound,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useVinyanStore } from '@/store/vinyan-store';
 import { useSSE } from '@/lib/use-sse';
 import { ErrorBoundary } from '@/components/error-boundary';
-import { bootstrapAuth, hasApiToken } from '@/lib/api-client';
+import { AuthButton } from '@/components/auth-button';
+import { bootstrapAuth } from '@/lib/api-client';
 
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Overview' },
@@ -39,6 +39,7 @@ export default function AppLayout() {
   const healthError = useVinyanStore((s) => s.healthError);
   const handleSSEEvent = useVinyanStore((s) => s.handleSSEEvent);
   const [ready, setReady] = useState(false);
+  const prevHealthError = useRef(healthError);
 
   // Bootstrap auth then start polling
   useEffect(() => {
@@ -50,11 +51,21 @@ export default function AppLayout() {
   }, [startPolling, stopPolling]);
 
   // SSE connects only after ready
-  const { connected, failed, reconnecting, reconnect } = useSSE({
+  const { connected, reconnectNow, reconnecting } = useSSE({
     path: '/api/v1/events',
     onEvent: handleSSEEvent,
     enabled: ready,
   });
+
+  // When health recovers from error, force SSE reconnect + full refresh
+  useEffect(() => {
+    const wasError = prevHealthError.current;
+    prevHealthError.current = healthError;
+    if (wasError && !healthError && !connected) {
+      reconnectNow();
+      useVinyanStore.getState().refreshAll();
+    }
+  }, [healthError, connected, reconnectNow]);
 
   const uptimeStr = () => {
     if (!health) return '--';
@@ -118,11 +129,11 @@ export default function AppLayout() {
               <span className="text-text-dim">
                 {!ready ? 'Connecting...' : connected ? 'Connected' : reconnecting ? 'Reconnecting...' : 'Disconnected'}
               </span>
-              {failed && (
+              {!connected && ready && !reconnecting && (
                 <button
                   type="button"
-                  className="px-2 py-0.5 text-xs rounded bg-red/10 text-red border border-red/30 hover:bg-red/20"
-                  onClick={reconnect}
+                  className="px-2 py-0.5 text-xs rounded bg-accent/10 text-accent border border-accent/30 hover:bg-accent/20"
+                  onClick={reconnectNow}
                 >
                   Retry
                 </button>
@@ -132,8 +143,7 @@ export default function AppLayout() {
             {healthError && <span className="text-red">{healthError}</span>}
           </div>
           <div className="flex items-center gap-1.5 text-xs">
-            <KeyRound size={12} className={hasApiToken() ? 'text-green' : 'text-text-dim'} />
-            <span className="text-text-dim">{hasApiToken() ? 'Auth OK' : 'No auth'}</span>
+            <AuthButton />
           </div>
         </header>
 

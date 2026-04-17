@@ -24,7 +24,7 @@ export default function Peers() {
         ) : (
           <div className="space-y-2">
             {peerEvents.slice(0, 50).map((e, i) => (
-              <div key={i} className="flex items-center gap-2 text-xs py-1 border-b border-border/50 last:border-0">
+              <div key={`${e.event}-${e.ts}-${i}`} className="flex items-center gap-2 text-xs py-1 border-b border-border/50 last:border-0">
                 <span className="px-1.5 py-0.5 rounded border bg-purple/10 text-purple border-purple/30 shrink-0">
                   {e.event}
                 </span>

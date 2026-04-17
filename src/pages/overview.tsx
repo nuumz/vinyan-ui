@@ -4,6 +4,7 @@ import { StatCard } from '@/components/ui/stat-card';
 import { EventBadge } from '@/components/ui/badge';
 import { Card } from '@/components/ui/card';
 import { PageHeader } from '@/components/ui/page-header';
+import { CardSkeleton } from '@/components/ui/skeleton';
 
 function Gauge({ value, label }: { value: number; label: string }) {
   const pct = Math.max(0, Math.min(1, value));
@@ -70,7 +71,17 @@ export default function Overview() {
   }
 
   if (!metrics) {
-    return <div className="text-text-dim text-sm">Loading metrics...</div>;
+    return (
+      <div className="space-y-6">
+        <PageHeader title="Dashboard" description="System overview and real-time metrics" />
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          {Array.from({ length: 4 }).map((_, i) => <CardSkeleton key={i} />)}
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {Array.from({ length: 3 }).map((_, i) => <CardSkeleton key={i} />)}
+        </div>
+      </div>
+    );
   }
 
   const m = metrics;
@@ -146,7 +157,7 @@ export default function Overview() {
             <div className="text-xs text-text-dim py-2">No events yet</div>
           ) : (
             events.slice(0, 20).map((e, i) => (
-              <div key={i} className="flex items-center gap-2 text-xs py-1 border-b border-border/50 last:border-0">
+              <div key={`${e.event}-${e.ts}-${i}`} className="flex items-center gap-2 text-xs py-1 border-b border-border/50 last:border-0">
                 <EventBadge event={e.event} />
                 <span className="text-text-dim truncate flex-1">{summarizePayload(e.payload)}</span>
                 <span className="text-text-dim tabular-nums shrink-0">{timeAgo(e.ts)}</span>

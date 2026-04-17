@@ -53,8 +53,8 @@ export default function SessionChat() {
           </div>
         )}
 
-        {messages.map((msg, i) => (
-          <MessageBubble key={i} message={msg} />
+        {messages.map((msg) => (
+          <MessageBubble key={`${msg.role}-${msg.timestamp}`} message={msg} />
         ))}
 
         {/* Pending clarifications */}
@@ -62,8 +62,8 @@ export default function SessionChat() {
           <div className="bg-yellow/5 border border-yellow/20 rounded-lg p-3">
             <div className="text-xs text-yellow font-medium mb-2">Clarification needed:</div>
             <ul className="list-disc list-inside text-sm text-text-dim space-y-1">
-              {pendingClarifications.map((q, i) => (
-                <li key={i}>{q}</li>
+              {pendingClarifications.map((q) => (
+                <li key={q}>{q}</li>
               ))}
             </ul>
           </div>
@@ -147,8 +147,8 @@ function MessageBubble({ message }: { message: { role: string; content: string; 
         {/* Tools used */}
         {message.toolsUsed && message.toolsUsed.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1">
-            {message.toolsUsed.map((t, i) => (
-              <span key={i} className="px-1.5 py-0.5 text-xs rounded bg-purple/10 text-purple border border-purple/20">
+            {message.toolsUsed.map((t) => (
+              <span key={t} className="px-1.5 py-0.5 text-xs rounded bg-purple/10 text-purple border border-purple/20">
                 {t}
               </span>
             ))}

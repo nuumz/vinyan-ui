@@ -13,6 +13,7 @@ import {
   type ConversationEntry,
   type TaskResult,
 } from '../lib/api-client';
+import { toast } from './toast-store';
 
 const MAX_EVENTS = 500;
 const POLL_FAST = 5_000;
@@ -123,8 +124,8 @@ export const useVinyanStore = create<VinyanState>((set, get) => ({
   cancelTask: async (id) => {
     try {
       await api.cancelTask(id);
-    } catch {
-      /* may already be done */
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to cancel task');
     }
     get().fetchTasks();
   },
@@ -153,7 +154,8 @@ export const useVinyanStore = create<VinyanState>((set, get) => ({
       const { session } = await api.createSession();
       get().fetchSessions();
       return session;
-    } catch {
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to create session');
       return null;
     }
   },
@@ -161,8 +163,8 @@ export const useVinyanStore = create<VinyanState>((set, get) => ({
     try {
       await api.compactSession(id);
       get().fetchSessions();
-    } catch {
-      /* silent */
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to compact session');
     }
   },
 
@@ -207,7 +209,7 @@ export const useVinyanStore = create<VinyanState>((set, get) => ({
       const { messages, session } = await api.getMessages(sessionId);
       set({ chatMessages: messages, chatPendingClarifications: session?.pendingClarifications ?? [] });
     } catch {
-      /* silent — session may be empty */
+      /* session may be empty — no messages yet is normal */
     }
   },
   sendChatMessage: async (content) => {
@@ -225,8 +227,9 @@ export const useVinyanStore = create<VinyanState>((set, get) => ({
       });
       get().fetchSessions();
       return task;
-    } catch {
+    } catch (err) {
       set({ chatSending: false });
+      toast.error(err instanceof Error ? err.message : 'Failed to send message');
       return null;
     }
   },

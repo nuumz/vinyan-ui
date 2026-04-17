@@ -231,7 +231,8 @@ export const api = {
   getHealth: () => fetchJSON<HealthResponse>('/health'),
   getMetrics: () => fetchJSON<SystemMetrics>('/metrics?format=json'),
   getPrometheusMetrics: async (): Promise<string> => {
-    const res = await fetch(`${API}/metrics`);
+    const res = await fetch(`${API}/metrics`, { headers: authHeaders() });
+    if (!res.ok) throw new Error(`Prometheus ${res.status}`);
     return res.text();
   },
 
