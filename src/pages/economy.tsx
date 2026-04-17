@@ -1,10 +1,14 @@
 import { useEconomy } from '@/hooks/use-economy';
-import { cn } from '@/lib/utils';
+import { useEconomyRecent } from '@/hooks/use-economy-recent';
+import { cn, timeAgo } from '@/lib/utils';
 import { PageHeader } from '@/components/ui/page-header';
 import { CardSkeleton } from '@/components/ui/skeleton';
+import { Badge } from '@/components/ui/badge';
+import { EmptyState } from '@/components/ui/empty-state';
 
 export default function Economy() {
   const { data: economy } = useEconomy();
+  const recent = useEconomyRecent(100);
 
   if (!economy) {
     return (
@@ -88,6 +92,67 @@ export default function Economy() {
             </div>
           </div>
         </div>
+      </div>
+
+      {/* Per-task cost drill-down */}
+      <div className="bg-surface rounded-lg border border-border overflow-hidden">
+        <div className="px-4 py-3 border-b border-border">
+          <div className="text-xs text-text-dim uppercase tracking-wider">
+            Recent Task Costs ({recent.data?.entries.length ?? 0}
+            {recent.data?.total != null && recent.data.total !== (recent.data.entries.length ?? 0)
+              ? ` of ${recent.data.total}`
+              : ''})
+          </div>
+        </div>
+        {!recent.data || recent.data.entries.length === 0 ? (
+          <EmptyState
+            message="No recent cost entries"
+            hint="Cost records accumulate as tasks complete"
+          />
+        ) : (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border text-left text-text-dim text-xs">
+                <th className="px-4 py-2">Task</th>
+                <th className="px-4 py-2">Engine</th>
+                <th className="px-4 py-2 text-right">Level</th>
+                <th className="px-4 py-2 text-right">Tokens</th>
+                <th className="px-4 py-2 text-right">Cost</th>
+                <th className="px-4 py-2">Tier</th>
+                <th className="px-4 py-2 text-right">When</th>
+              </tr>
+            </thead>
+            <tbody>
+              {recent.data.entries.map((e) => (
+                <tr key={e.id} className="border-b border-border/50">
+                  <td className="px-4 py-2 font-mono text-xs truncate max-w-[12rem]" title={e.taskId}>
+                    {e.taskId}
+                  </td>
+                  <td className="px-4 py-2 font-mono text-xs text-text-dim truncate max-w-[16rem]">
+                    {e.engineId}
+                  </td>
+                  <td className="px-4 py-2 tabular-nums text-right text-text-dim text-xs">
+                    L{e.routing_level}
+                  </td>
+                  <td className="px-4 py-2 tabular-nums text-right text-text-dim text-xs">
+                    {(e.tokens_input + e.tokens_output).toLocaleString()}
+                  </td>
+                  <td className="px-4 py-2 tabular-nums text-right">
+                    ${e.computed_usd.toFixed(5)}
+                  </td>
+                  <td className="px-4 py-2">
+                    <Badge variant={e.cost_tier === 'billing' ? 'success' : 'warning'}>
+                      {e.cost_tier}
+                    </Badge>
+                  </td>
+                  <td className="px-4 py-2 tabular-nums text-right text-text-dim text-xs">
+                    {timeAgo(e.timestamp)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
     </div>
   );

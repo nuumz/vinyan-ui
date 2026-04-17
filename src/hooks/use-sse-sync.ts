@@ -60,6 +60,18 @@ export function useSSESync({ enabled }: UseSSESyncOptions) {
           queryClient.invalidateQueries({ queryKey: qk.sessionMessages(sessionId) });
         }
       }
+      // Sleep cycle + evolution → refresh sleep-cycle status, rules, patterns.
+      if (name === 'sleep:cycleComplete') {
+        queryClient.invalidateQueries({ queryKey: qk.sleepCycle });
+        queryClient.invalidateQueries({ queryKey: qk.patterns });
+      }
+      if (
+        name === 'evolution:rulePromoted' ||
+        name === 'evolution:ruleRetired' ||
+        name === 'evolution:rulesApplied'
+      ) {
+        queryClient.invalidateQueries({ queryKey: ['rules'] });
+      }
     },
     [queryClient, addEvent],
   );

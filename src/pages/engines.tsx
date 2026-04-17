@@ -3,7 +3,8 @@ import { RefreshCw } from 'lucide-react';
 import { useWorkers } from '@/hooks/use-workers';
 import { useTasks } from '@/hooks/use-tasks';
 import { useMetrics } from '@/hooks/use-metrics';
-import { StatusBadge } from '@/components/ui/badge';
+import { useEngine } from '@/hooks/use-engine';
+import { StatusBadge, Badge } from '@/components/ui/badge';
 import { StatCard } from '@/components/ui/stat-card';
 import { PageHeader } from '@/components/ui/page-header';
 import { TableSkeleton } from '@/components/ui/skeleton';
@@ -291,6 +292,7 @@ function DrilldownRow({ engine: e, stats }: { engine: Worker; stats: EngineStats
   return (
     <tr>
       <td colSpan={9} className="px-4 py-3 bg-bg/50">
+        <EngineCapabilityPanel engineId={e.id} />
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
           {/* Config */}
           <div className="space-y-1.5">
@@ -355,6 +357,70 @@ function DetailRow({ label, value }: { label: string; value: React.ReactNode }) 
     <div className="flex justify-between gap-4">
       <span className="text-text-dim">{label}</span>
       <span className="text-text truncate">{value}</span>
+    </div>
+  );
+}
+
+function EngineCapabilityPanel({ engineId }: { engineId: string }) {
+  const { data } = useEngine(engineId);
+  if (!data) return null;
+  const caps = data.capabilities ?? [];
+  const trust = data.providerTrust;
+
+  if (caps.length === 0 && !trust) return null;
+
+  return (
+    <div className="mb-3 pb-3 border-b border-border/50 space-y-3 text-xs">
+      {trust && (
+        <div>
+          <div className="text-text-dim uppercase tracking-wider mb-1.5">Provider Trust</div>
+          <div className="flex items-center gap-2 bg-bg rounded p-2">
+            <span className="font-mono">{trust.provider}</span>
+            <span className="text-text-dim">·</span>
+            <span>{trust.capability}</span>
+            <span className="ml-auto text-green">✓{trust.successes}</span>
+            <span className="text-red">✗{trust.failures}</span>
+            {(() => {
+              const total = trust.successes + trust.failures;
+              const rate = total > 0 ? trust.successes / total : null;
+              const color = rate == null ? '' : rate >= 0.9 ? 'text-green' : rate >= 0.7 ? 'text-yellow' : 'text-red';
+              return rate != null ? (
+                <span className={cn('tabular-nums', color)}>{(rate * 100).toFixed(0)}%</span>
+              ) : null;
+            })()}
+          </div>
+        </div>
+      )}
+      {caps.length > 0 && (
+        <div>
+          <div className="text-text-dim uppercase tracking-wider mb-1.5">
+            Capability Scores ({caps.length})
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-1">
+            {caps.slice(0, 10).map((c) => {
+              const color =
+                c.score >= 0.7 ? 'text-green' : c.score >= 0.4 ? 'text-yellow' : 'text-red';
+              return (
+                <div
+                  key={c.fingerprintKey}
+                  className="flex items-center gap-2 bg-bg rounded px-2 py-1"
+                >
+                  <code className="text-[10px] truncate flex-1" title={c.fingerprintKey}>
+                    {c.fingerprintKey}
+                  </code>
+                  <Badge variant="neutral" className="text-[10px]">
+                    n={c.samples}
+                  </Badge>
+                  <span className={cn('tabular-nums', color)}>{c.score.toFixed(2)}</span>
+                </div>
+              );
+            })}
+          </div>
+          {caps.length > 10 && (
+            <div className="text-text-dim mt-1">…and {caps.length - 10} more</div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

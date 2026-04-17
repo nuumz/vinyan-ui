@@ -90,6 +90,164 @@ export interface Worker {
   demotionCount: number;
 }
 
+export interface AgentRoutingHints {
+  minLevel?: number;
+  preferDomains?: string[];
+  preferExtensions?: string[];
+  preferFrameworks?: string[];
+}
+
+export interface AgentCapabilityOverrides {
+  readAny?: boolean;
+  writeAny?: boolean;
+  network?: boolean;
+  shell?: boolean;
+}
+
+export interface AgentListEntry {
+  id: string;
+  name: string;
+  description: string;
+  builtin: boolean;
+  isDefault: boolean;
+  allowedTools: string[] | null;
+  routingHints: AgentRoutingHints | null;
+  capabilityOverrides: AgentCapabilityOverrides | null;
+  role: string | null;
+  specialization: string | null;
+  persona: string | null;
+  episodeCount: number;
+  proficiencyCount: number;
+}
+
+export interface AgentEpisode {
+  taskId: string;
+  taskSignature: string;
+  outcome: 'success' | 'partial' | 'failed';
+  lesson: string;
+  filesInvolved: string[];
+  approachUsed: string;
+  timestamp: number;
+}
+
+export interface AgentContextDetail {
+  identity: {
+    agentId: string;
+    persona: string;
+    strengths: string[];
+    weaknesses: string[];
+    approachStyle: string;
+  };
+  memory: {
+    episodes: AgentEpisode[];
+    lessonsSummary: string;
+  };
+  skills: {
+    proficiencies: Record<
+      string,
+      {
+        taskSignature: string;
+        level: string;
+        successRate: number;
+        totalAttempts: number;
+        lastAttempt: number;
+      }
+    >;
+    preferredApproaches: Record<string, string>;
+    antiPatterns: string[];
+  };
+  lastUpdated: number;
+}
+
+export interface AgentDetail {
+  spec: {
+    id: string;
+    name: string;
+    description: string;
+    builtin: boolean;
+    isDefault: boolean;
+    soul: string | null;
+    soulPath: string | null;
+    allowedTools: string[] | null;
+    routingHints: AgentRoutingHints | null;
+    capabilityOverrides: AgentCapabilityOverrides | null;
+  };
+  profile: Record<string, unknown> | null;
+  context: AgentContextDetail | null;
+}
+
+export interface CachedSkill {
+  taskSignature: string;
+  approach: string;
+  successRate: number;
+  status: 'active' | 'probation' | 'demoted';
+  probationRemaining: number;
+  usageCount: number;
+  riskAtCreation: number;
+  lastVerifiedAt: number;
+  verificationProfile: string;
+  origin?: string;
+  agentId?: string | null;
+}
+
+export interface ExtractedPattern {
+  id: string;
+  type: 'anti-pattern' | 'success-pattern' | 'worker-performance' | 'decomposition-pattern';
+  description: string;
+  frequency: number;
+  confidence: number;
+  taskTypeSignature: string;
+  approach?: string;
+  qualityDelta?: number;
+  decayWeight: number;
+  createdAt: number;
+  routingLevel?: number;
+  workerId?: string;
+}
+
+export interface DoctorCheck {
+  name: string;
+  status: 'ok' | 'warn' | 'fail';
+  detail: string;
+}
+
+export interface DoctorReport {
+  status: 'healthy' | 'degraded' | 'critical';
+  timestamp: number;
+  deep: boolean;
+  checks: DoctorCheck[];
+  summary: { passed: number; total: number };
+}
+
+export interface ConfigResponse {
+  config: Record<string, unknown>;
+}
+
+export interface ValidationResult {
+  valid: boolean;
+  errors?: Array<{ path: string; message: string }>;
+}
+
+export interface MCPServerEntry {
+  name: string;
+  trustLevel: string;
+  connected: boolean;
+  toolCount: number;
+}
+
+export interface MCPToolEntry {
+  serverName: string;
+  name: string;
+  description?: string;
+}
+
+export interface MCPReport {
+  enabled: boolean;
+  configured: Array<{ name: string; trustLevel: string }>;
+  servers: MCPServerEntry[];
+  tools?: MCPToolEntry[];
+}
+
 export interface Session {
   id: string;
   source: string;
@@ -98,12 +256,254 @@ export interface Session {
   taskCount: number;
 }
 
+export type RuleStatus = 'active' | 'probation' | 'retired';
+
 export interface Rule {
   id: string;
-  condition: string;
-  action: string;
+  source: 'sleep-cycle' | 'manual';
+  condition: {
+    filePattern?: string;
+    oracleName?: string;
+    riskAbove?: number;
+    modelPattern?: string;
+  };
+  action: 'escalate' | 'require-oracle' | 'prefer-model' | 'adjust-threshold' | 'assign-worker';
+  parameters: Record<string, unknown>;
+  status: RuleStatus;
+  createdAt: number;
+  effectiveness: number;
+  specificity: number;
+  supersededBy?: string;
+  origin?: 'local' | 'a2a' | 'mcp';
+}
+
+export interface RulesResponse {
+  rules: Rule[];
+  counts: { active: number; probation: number; retired: number };
+}
+
+export interface OracleAccuracyStats {
+  total: number;
+  correct: number;
+  wrong: number;
+  pending: number;
+  accuracy: number | null;
+}
+
+export interface OracleSummary {
+  name: string;
+  builtin: boolean;
+  tier: string | null;
+  timeoutMs: number | null;
+  timeoutBehavior: string | null;
+  enabled: boolean;
+  languages: string[];
+  transport: string;
+  circuitState: 'closed' | 'open' | 'half-open';
+  accuracy: OracleAccuracyStats | null;
+}
+
+export interface SleepCycleStatus {
+  enabled: boolean;
+  interval: number | null;
+  totalRuns: number;
+  recentRuns: number[];
+  patternsExtracted: number;
+}
+
+export interface SleepCycleTriggerResult {
+  triggered: boolean;
+  startedAt: number;
+}
+
+export type ShadowStatus = 'pending' | 'running' | 'done' | 'failed';
+
+export interface ShadowJobSummary {
+  id: string;
+  taskId: string;
+  status: ShadowStatus;
+  enqueuedAt: number;
+  startedAt?: number;
+  completedAt?: number;
+  retryCount: number;
+  maxRetries: number;
+  result?: unknown;
+  mutationCount: number;
+  mutationFiles: string[];
+}
+
+export interface ShadowReport {
+  enabled: boolean;
+  jobs: ShadowJobSummary[];
+  counts: { pending: number; running: number; done: number; failed: number };
+}
+
+export interface TraceSummary {
+  id: string;
+  taskId: string;
+  timestamp: number;
+  routingLevel: number;
+  approach?: string;
+  outcome?: string;
+  modelUsed?: string;
+  tokensConsumed?: number;
+  durationMs?: number;
+  riskScore?: number;
+  taskTypeSignature?: string;
+}
+
+export interface TracesResponse {
+  traces: TraceSummary[];
+  count: number;
+  total: number;
+}
+
+export interface MemoryProposal {
+  filename: string;
+  path: string;
+  slug: string;
+  category: string | null;
+  confidence: number | null;
+  description: string | null;
+  content: string;
+}
+
+export interface MemoryProposalsResponse {
+  proposals: MemoryProposal[];
+}
+
+export interface CalibrationReport {
+  enabled: boolean;
+  traceCount: number;
+  recentBrierScores: number[];
+  averageBrier: number | null;
+}
+
+export interface HMSRecentTrace {
+  id: string;
+  taskId: string;
+  timestamp: number;
+  outcome?: string;
+  riskScore: number | null;
+  approach?: string;
+}
+
+export interface HMSReport {
+  config: Record<string, unknown> | null;
+  recentTraces: HMSRecentTrace[];
+  summary: { totalAnalyzed: number; highRiskCount: number; avgRisk: number | null };
+}
+
+export type PeerTrustLevel = 'untrusted' | 'provisional' | 'established' | 'trusted';
+
+export interface PeerTrustRecord {
+  peerId: string;
+  instanceId: string;
+  trustLevel: PeerTrustLevel;
+  interactions: number;
+  accurate: number;
+  wilsonLB: number;
+  lastInteraction: number;
+  promotedAt?: number;
+  demotedAt?: number;
+  consecutiveFailures: number;
+}
+
+export interface PeersReport {
+  enabled: boolean;
+  peers: PeerTrustRecord[];
+}
+
+export interface ProviderTrustRecord {
+  provider: string;
+  capability: string;
+  successes: number;
+  failures: number;
+  lastUpdated: number;
+  evidenceHash?: string;
+}
+
+export interface ProvidersReport {
+  enabled: boolean;
+  providers: ProviderTrustRecord[];
+}
+
+export interface FederationPoolStatus {
+  total_contributed_usd: number;
+  total_consumed_usd: number;
+  remaining_usd: number;
+  exhausted: boolean;
+}
+
+export interface FederationReport {
+  enabled: boolean;
+  pool: FederationPoolStatus;
+}
+
+export interface MarketPhaseState {
+  currentPhase: 'A' | 'B' | 'C' | string;
+  auctionCount: number;
+  activatedAt?: number;
+  lastEvaluatedAt?: number;
+}
+
+export interface BidAccuracyRecord {
+  bidderId: string;
+  settlements: number;
+  accurate: number;
+  avgPenalty: number;
+  lastUpdated: number;
+}
+
+export interface MarketReport {
+  enabled: boolean;
+  active: boolean;
+  phase?: MarketPhaseState;
+  bidderStats?: BidAccuracyRecord[];
+}
+
+export interface CostEntry {
+  id: string;
+  taskId: string;
+  workerId: string | null;
+  engineId: string;
+  timestamp: number;
+  tokens_input: number;
+  tokens_output: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  duration_ms: number;
+  oracle_invocations: number;
+  computed_usd: number;
+  cost_tier: 'billing' | 'estimated';
+  routing_level: number;
+  task_type_signature: string | null;
+}
+
+export interface EconomyRecentResponse {
+  entries: CostEntry[];
+  total: number;
+}
+
+export interface CapabilityScore {
+  workerId: string;
+  fingerprintKey: string;
+  score: number;
+  samples: number;
+  successRate: number;
+  lastUpdated?: number;
+}
+
+export interface EngineDetail {
+  worker: Worker;
+  capabilities: CapabilityScore[];
+  providerTrust: ProviderTrustRecord | null;
+}
+
+export interface SessionClarifications {
+  sessionId: string;
+  pendingClarifications: string[];
   status: string;
-  accuracy?: number;
 }
 
 export interface Fact {
@@ -333,9 +733,59 @@ export const api = {
 
   // Read-only (no auth)
   getWorkers: () => fetchJSON<{ workers: Worker[] }>('/workers'),
-  getRules: () => fetchJSON<{ rules: Rule[] }>('/rules'),
+  getRules: (status?: RuleStatus) =>
+    fetchJSON<RulesResponse>(status ? `/rules?status=${status}` : '/rules'),
   getFacts: () => fetchJSON<{ facts: Fact[] }>('/facts'),
   getEconomy: () => fetchJSON<EconomyResponse>('/economy'),
+  getAgents: () => fetchJSON<{ agents: AgentListEntry[] }>('/agents'),
+  getAgent: (id: string) => fetchJSON<AgentDetail>(`/agents/${encodeURIComponent(id)}`),
+  getSkills: (status?: 'active' | 'probation' | 'demoted') =>
+    fetchJSON<{ skills: CachedSkill[] }>(status ? `/skills?status=${status}` : '/skills'),
+  getPatterns: () => fetchJSON<{ patterns: ExtractedPattern[] }>('/patterns'),
+  getDoctor: (deep = false) => fetchJSON<DoctorReport>(`/doctor${deep ? '?deep=true' : ''}`),
+  getConfig: () => fetchJSON<ConfigResponse>('/config'),
+  validateConfig: (body: unknown) =>
+    fetchJSON<ValidationResult>('/config/validate', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  getMCP: () => fetchJSON<MCPReport>('/mcp'),
+  getOracles: () => fetchJSON<{ oracles: OracleSummary[] }>('/oracles'),
+  getSleepCycle: () => fetchJSON<SleepCycleStatus>('/sleep-cycle'),
+  triggerSleepCycle: () =>
+    fetchJSON<SleepCycleTriggerResult>('/sleep-cycle/trigger', { method: 'POST' }),
+  getShadow: (status?: ShadowStatus) =>
+    fetchJSON<ShadowReport>(status ? `/shadow?status=${status}` : '/shadow'),
+  getTraces: (opts?: { limit?: number; outcome?: string; taskType?: string }) => {
+    const params = new URLSearchParams();
+    if (opts?.limit) params.set('limit', String(opts.limit));
+    if (opts?.outcome) params.set('outcome', opts.outcome);
+    if (opts?.taskType) params.set('taskType', opts.taskType);
+    const qs = params.toString();
+    return fetchJSON<TracesResponse>(qs ? `/traces?${qs}` : '/traces');
+  },
+  getMemory: () => fetchJSON<MemoryProposalsResponse>('/memory'),
+  approveMemory: (handle: string, reviewer: string) =>
+    fetchJSON<{ approved: string; learnedPath: string }>('/memory/approve', {
+      method: 'POST',
+      body: JSON.stringify({ handle, reviewer }),
+    }),
+  rejectMemory: (handle: string, reviewer: string, reason: string) =>
+    fetchJSON<{ rejected: string; rejectedPath: string }>('/memory/reject', {
+      method: 'POST',
+      body: JSON.stringify({ handle, reviewer, reason }),
+    }),
+  getCalibration: () => fetchJSON<CalibrationReport>('/predictions/calibration'),
+  getHMS: () => fetchJSON<HMSReport>('/hms'),
+  getPeers: () => fetchJSON<PeersReport>('/peers'),
+  getProviders: () => fetchJSON<ProvidersReport>('/providers'),
+  getFederation: () => fetchJSON<FederationReport>('/federation'),
+  getMarket: () => fetchJSON<MarketReport>('/market'),
+  getEconomyRecent: (limit = 100) =>
+    fetchJSON<EconomyRecentResponse>(`/economy/recent?limit=${limit}`),
+  getEngine: (id: string) => fetchJSON<EngineDetail>(`/engines/${encodeURIComponent(id)}`),
+  getSessionClarifications: (sessionId: string) =>
+    fetchJSON<SessionClarifications>(`/sessions/${encodeURIComponent(sessionId)}/clarifications`),
 
   // Tasks (auth for mutations)
   getTasks: () => fetchJSON<{ tasks: Task[] }>('/tasks'),

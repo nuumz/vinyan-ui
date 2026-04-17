@@ -11,6 +11,24 @@ import {
   Globe,
   BarChart3,
   Wallet,
+  ShieldCheck,
+  Sparkles,
+  Lightbulb,
+  ChevronDown,
+  Stethoscope,
+  Settings,
+  Plug,
+  Moon,
+  ShieldAlert,
+  FileText,
+  FlaskConical,
+  BrainCircuit,
+  Target,
+  BookOpenCheck,
+  Landmark,
+  Gavel,
+  BadgeCheck,
+  type LucideIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useHealth } from '@/hooks/use-health';
@@ -21,17 +39,89 @@ import { SystemStatusBanner } from '@/components/system-status-banner';
 import { bootstrapAuth } from '@/lib/api-client';
 import { useQueryClient } from '@tanstack/react-query';
 
-const navItems = [
-  { to: '/', icon: LayoutDashboard, label: 'Overview' },
-  { to: '/tasks', icon: ListTodo, label: 'Tasks' },
-  { to: '/engines', icon: Bot, label: 'Engines' },
-  { to: '/sessions', icon: MessageSquare, label: 'Sessions' },
-  { to: '/economy', icon: Wallet, label: 'Economy' },
-  { to: '/events', icon: Activity, label: 'Events' },
-  { to: '/peers', icon: Users, label: 'Peers' },
-  { to: '/rules', icon: BookOpen, label: 'Rules' },
-  { to: '/world-graph', icon: Globe, label: 'World Graph' },
-  { to: '/metrics', icon: BarChart3, label: 'Metrics' },
+interface NavItem {
+  to: string;
+  icon: LucideIcon;
+  label: string;
+}
+
+interface NavGroup {
+  id: string;
+  label: string;
+  items: NavItem[];
+  defaultOpen?: boolean;
+}
+
+const navGroups: NavGroup[] = [
+  {
+    id: 'runtime',
+    label: 'Runtime',
+    defaultOpen: true,
+    items: [
+      { to: '/', icon: LayoutDashboard, label: 'Overview' },
+      { to: '/tasks', icon: ListTodo, label: 'Tasks' },
+      { to: '/approvals', icon: ShieldCheck, label: 'Approvals' },
+      { to: '/sessions', icon: MessageSquare, label: 'Sessions' },
+      { to: '/events', icon: Activity, label: 'Events' },
+      { to: '/trace', icon: FileText, label: 'Trace' },
+    ],
+  },
+  {
+    id: 'fleet',
+    label: 'Fleet',
+    defaultOpen: true,
+    items: [
+      { to: '/engines', icon: Bot, label: 'Engines' },
+      { to: '/agents', icon: Users, label: 'Agents' },
+      { to: '/peers', icon: Users, label: 'Peers' },
+      { to: '/mcp', icon: Plug, label: 'MCP' },
+    ],
+  },
+  {
+    id: 'knowledge',
+    label: 'Knowledge',
+    defaultOpen: false,
+    items: [
+      { to: '/skills', icon: Sparkles, label: 'Skills' },
+      { to: '/patterns', icon: Lightbulb, label: 'Patterns' },
+      { to: '/world-graph', icon: Globe, label: 'World Graph' },
+      { to: '/memory', icon: BookOpenCheck, label: 'Memory' },
+    ],
+  },
+  {
+    id: 'evolution',
+    label: 'Evolution',
+    defaultOpen: false,
+    items: [
+      { to: '/rules', icon: BookOpen, label: 'Rules' },
+      { to: '/oracles', icon: ShieldAlert, label: 'Oracles' },
+      { to: '/sleep-cycle', icon: Moon, label: 'Sleep Cycle' },
+      { to: '/shadow', icon: FlaskConical, label: 'Shadow' },
+      { to: '/calibration', icon: Target, label: 'Calibration' },
+      { to: '/hms', icon: BrainCircuit, label: 'HMS' },
+    ],
+  },
+  {
+    id: 'economy',
+    label: 'Economy',
+    defaultOpen: false,
+    items: [
+      { to: '/economy', icon: Wallet, label: 'Economy' },
+      { to: '/providers', icon: BadgeCheck, label: 'Provider Trust' },
+      { to: '/federation', icon: Landmark, label: 'Federation' },
+      { to: '/market', icon: Gavel, label: 'Market' },
+    ],
+  },
+  {
+    id: 'system',
+    label: 'System',
+    defaultOpen: false,
+    items: [
+      { to: '/metrics', icon: BarChart3, label: 'Metrics' },
+      { to: '/doctor', icon: Stethoscope, label: 'Doctor' },
+      { to: '/config', icon: Settings, label: 'Config' },
+    ],
+  },
 ];
 
 export default function AppLayout() {
@@ -41,17 +131,16 @@ export default function AppLayout() {
   const healthError = health.error instanceof Error ? health.error.message : null;
   const prevHealthError = useRef(healthError);
   const queryClient = useQueryClient();
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(
+    () => Object.fromEntries(navGroups.map((g) => [g.id, g.defaultOpen ?? false])),
+  );
 
-  // Bootstrap auth in the background; retries forever until a token is
-  // obtained (backend cold-start is tolerated). authReady flips true the
-  // moment a token arrives so SSE + queries can start.
   useEffect(() => {
     bootstrapAuth().then(() => setAuthReady(true));
   }, []);
 
   const { connected, reconnectNow, reconnecting } = useSSESync({ enabled: authReady });
 
-  // When health recovers from error, force a reconnect so the UI resyncs fast.
   useEffect(() => {
     const wasError = prevHealthError.current;
     prevHealthError.current = healthError;
@@ -60,9 +149,6 @@ export default function AppLayout() {
     }
   }, [healthError, connected, reconnectNow]);
 
-  // Browser online/offline recovery: when the network returns, immediately
-  // reconnect SSE and refetch all queries (TanStack's refetchOnReconnect
-  // covers stale queries but SSE needs a nudge).
   useEffect(() => {
     const onOnline = () => {
       reconnectNow();
@@ -71,6 +157,9 @@ export default function AppLayout() {
     window.addEventListener('online', onOnline);
     return () => window.removeEventListener('online', onOnline);
   }, [reconnectNow, queryClient]);
+
+  const toggleGroup = (id: string) =>
+    setOpenGroups((prev) => ({ ...prev, [id]: !prev[id] }));
 
   const uptimeStr = () => {
     if (!healthData) return '--';
@@ -91,34 +180,57 @@ export default function AppLayout() {
           <p className="text-xs text-text-dim mt-0.5">Epistemic Orchestration</p>
         </div>
 
-        <nav className="flex-1 py-2 space-y-0.5">
-          {navItems.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.to === '/'}
-              className={({ isActive }) =>
-                cn(
-                  'flex items-center gap-3 px-4 py-2 text-sm transition-colors',
-                  isActive
-                    ? 'bg-accent/10 text-accent border-r-2 border-accent'
-                    : 'text-text-dim hover:text-text hover:bg-white/5',
-                )
-              }
-            >
-              <item.icon size={16} />
-              {item.label}
-            </NavLink>
-          ))}
+        <nav className="flex-1 py-2 overflow-y-auto">
+          {navGroups.map((group) => {
+            const open = openGroups[group.id];
+            return (
+              <div key={group.id} className="mb-1">
+                <button
+                  type="button"
+                  onClick={() => toggleGroup(group.id)}
+                  className="w-full flex items-center justify-between px-4 py-1.5 text-xs uppercase tracking-wider text-text-dim/70 hover:text-text transition-colors"
+                >
+                  <span>{group.label}</span>
+                  <ChevronDown
+                    size={12}
+                    className={cn('transition-transform', open ? 'rotate-0' : '-rotate-90')}
+                  />
+                </button>
+                {open &&
+                  group.items.map((item) => (
+                    <NavLink
+                      key={item.to}
+                      to={item.to}
+                      end={item.to === '/'}
+                      className={({ isActive }) =>
+                        cn(
+                          'flex items-center gap-3 px-4 py-2 text-sm transition-colors',
+                          isActive
+                            ? 'bg-accent/10 text-accent border-r-2 border-accent'
+                            : 'text-text-dim hover:text-text hover:bg-white/5',
+                        )
+                      }
+                    >
+                      <item.icon size={16} />
+                      {item.label}
+                    </NavLink>
+                  ))}
+              </div>
+            );
+          })}
         </nav>
 
-        <div className="p-4 border-t border-border text-xs text-text-dim">v0.1.0</div>
+        <div className="p-4 border-t border-border text-xs text-text-dim flex items-center justify-between">
+          <span>v0.1.0</span>
+          <span className="text-text-dim/70">
+            <kbd className="bg-bg px-1 py-0.5 rounded border border-border text-[10px]">⌘K</kbd>
+          </span>
+        </div>
       </aside>
 
       {/* Main */}
       <div className="flex-1 flex flex-col overflow-hidden">
         <SystemStatusBanner />
-        {/* Header */}
         <header className="h-11 bg-surface border-b border-border flex items-center justify-between px-4 shrink-0">
           <div className="flex items-center gap-4 text-xs">
             <div className="flex items-center gap-2">
@@ -159,7 +271,6 @@ export default function AppLayout() {
           </div>
         </header>
 
-        {/* Content */}
         <main className="flex-1 overflow-auto p-6 relative">
           <ErrorBoundary>
             <Outlet />

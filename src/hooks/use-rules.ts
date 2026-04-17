@@ -1,11 +1,11 @@
 import { useQuery } from '@tanstack/react-query';
-import { api } from '@/lib/api-client';
+import { api, type RuleStatus } from '@/lib/api-client';
 import { qk } from '@/lib/query-keys';
 
-export function useRules() {
+export function useRules(status?: RuleStatus) {
   return useQuery({
-    queryKey: qk.rules,
-    queryFn: () => api.getRules().then((r) => r.rules),
-    staleTime: 60_000,
+    queryKey: qk.rules(status),
+    queryFn: () => api.getRules(status),
+    staleTime: 30_000,
   });
 }

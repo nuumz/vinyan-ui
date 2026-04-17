@@ -1,28 +1,48 @@
 import { useEffect, useLayoutEffect, useState, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useSessionMessages, useSendMessage } from '@/hooks/use-chat';
+import { useStreamingTurn, useStreamingTurnStore } from '@/hooks/use-streaming-turn';
 import { cn } from '@/lib/utils';
 import { ArrowLeft, Send, Loader2 } from 'lucide-react';
+import { MessageBubble } from '@/components/chat/message-bubble';
+import { StreamingBubble } from '@/components/chat/streaming-bubble';
 
 export default function SessionChat() {
   const { id } = useParams<{ id: string }>();
   const sessionId = id ?? null;
   const messagesQuery = useSessionMessages(sessionId);
   const sendMessage = useSendMessage(sessionId);
+  const turn = useStreamingTurn(sessionId);
+  const clearTurn = useStreamingTurnStore((s) => s.clear);
 
   const messages = messagesQuery.data?.messages ?? [];
   const pendingClarifications = messagesQuery.data?.session?.pendingClarifications ?? [];
   const sending = sendMessage.isPending;
 
   const [input, setInput] = useState('');
+  const [lastSent, setLastSent] = useState('');
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  // Live elapsed clock — 250ms ticks only while a turn is active.
+  useEffect(() => {
+    if (!turn || turn.status !== 'running') return;
+    const t = setInterval(() => setNowMs(Date.now()), 250);
+    return () => clearInterval(t);
+  }, [turn?.status]);
+
+  // Clear any stale streaming bubble when switching sessions / unmounting.
+  useEffect(() => {
+    return () => {
+      if (sessionId) clearTurn(sessionId);
+    };
+  }, [sessionId, clearTurn]);
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, sending]);
+  }, [messages, sending, turn?.toolCalls.length, turn?.finalContent, turn?.status]);
 
-  // Auto-grow textarea up to 6 lines
   useLayoutEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
@@ -34,12 +54,19 @@ export default function SessionChat() {
     const text = input.trim();
     if (!text || sending) return;
     setInput('');
+    setLastSent(text);
     sendMessage.mutate(text);
   };
 
+  const handleRetry = () => {
+    if (!lastSent || sending) return;
+    sendMessage.mutate(lastSent);
+  };
+
+  const showStreaming = !!turn && turn.status !== 'idle';
+
   return (
     <div className="absolute inset-0 flex flex-col bg-bg">
-      {/* Header */}
       <div className="h-12 bg-surface border-b border-border flex items-center gap-3 px-4 shrink-0">
         <Link to="/sessions" className="text-text-dim hover:text-text transition-colors">
           <ArrowLeft size={16} />
@@ -50,20 +77,22 @@ export default function SessionChat() {
         </div>
       </div>
 
-      {/* Messages */}
       <div className="flex-1 overflow-auto px-4 py-4 space-y-4">
-        {messages.length === 0 && !sending && (
+        {messages.length === 0 && !showStreaming && (
           <div className="text-text-dim text-sm text-center py-12">
             Send a message to start the conversation
           </div>
         )}
 
         {messages.map((msg) => (
-          <MessageBubble key={`${msg.role}-${msg.timestamp}`} message={msg} />
+          <MessageBubble key={`${msg.role}-${msg.timestamp}-${msg.taskId}`} message={msg} />
         ))}
 
-        {/* Pending clarifications */}
-        {pendingClarifications.length > 0 && (
+        {showStreaming && turn && (
+          <StreamingBubble turn={turn} nowMs={nowMs} onRetry={handleRetry} />
+        )}
+
+        {!showStreaming && pendingClarifications.length > 0 && (
           <div className="bg-yellow/5 border border-yellow/20 rounded-lg p-3">
             <div className="text-xs text-yellow font-medium mb-2">Clarification needed:</div>
             <ul className="list-disc list-inside text-sm text-text-dim space-y-1">
@@ -74,17 +103,9 @@ export default function SessionChat() {
           </div>
         )}
 
-        {sending && (
-          <div className="flex items-center gap-2 text-text-dim text-sm">
-            <Loader2 size={14} className="animate-spin" />
-            Thinking...
-          </div>
-        )}
-
         <div ref={bottomRef} />
       </div>
 
-      {/* Input — integrated pill with embedded send button */}
       <div className="shrink-0 px-4 pb-4 pt-2">
         <div
           className={cn(
@@ -97,7 +118,7 @@ export default function SessionChat() {
             rows={1}
             className="flex-1 bg-transparent text-sm text-text placeholder-gray-500 focus:outline-none resize-none leading-6 py-1 max-h-40"
             placeholder={
-              pendingClarifications.length > 0
+              (turn?.status === 'input-required' || pendingClarifications.length > 0)
                 ? 'Answer the clarification...'
                 : 'Type a message...  (Enter to send · Shift+Enter for newline)'
             }
@@ -126,60 +147,6 @@ export default function SessionChat() {
           >
             {sending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
           </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function MessageBubble({ message }: { message: { role: string; content: string; thinking?: string; toolsUsed?: string[]; timestamp: number } }) {
-  const isUser = message.role === 'user';
-  const [showThinking, setShowThinking] = useState(false);
-
-  return (
-    <div className={cn('flex', isUser ? 'justify-end' : 'justify-start')}>
-      <div
-        className={cn(
-          'max-w-[80%] rounded-lg px-4 py-3 text-sm',
-          isUser
-            ? 'bg-accent/15 text-text border border-accent/20'
-            : 'bg-surface border border-border text-text',
-        )}
-      >
-        <div className="whitespace-pre-wrap break-words">{message.content}</div>
-
-        {/* Thinking block */}
-        {message.thinking && (
-          <div className="mt-2">
-            <button
-              type="button"
-              className="text-xs text-text-dim hover:text-text transition-colors"
-              onClick={() => setShowThinking(!showThinking)}
-            >
-              {showThinking ? 'Hide thinking' : 'Show thinking'}
-            </button>
-            {showThinking && (
-              <pre className="mt-1 text-xs text-text-dim bg-bg/50 rounded p-2 overflow-auto max-h-40">
-                {message.thinking}
-              </pre>
-            )}
-          </div>
-        )}
-
-        {/* Tools used */}
-        {message.toolsUsed && message.toolsUsed.length > 0 && (
-          <div className="mt-2 flex flex-wrap gap-1">
-            {message.toolsUsed.map((t) => (
-              <span key={t} className="px-1.5 py-0.5 text-xs rounded bg-purple/10 text-purple border border-purple/20">
-                {t}
-              </span>
-            ))}
-          </div>
-        )}
-
-        {/* Timestamp */}
-        <div className="text-xs text-text-dim mt-1.5">
-          {new Date(message.timestamp).toLocaleTimeString()}
         </div>
       </div>
     </div>
