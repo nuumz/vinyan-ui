@@ -17,7 +17,9 @@ import { useHealth } from '@/hooks/use-health';
 import { useSSESync } from '@/hooks/use-sse-sync';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { AuthButton } from '@/components/auth-button';
+import { SystemStatusBanner } from '@/components/system-status-banner';
 import { bootstrapAuth } from '@/lib/api-client';
+import { useQueryClient } from '@tanstack/react-query';
 
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Overview' },
@@ -38,9 +40,11 @@ export default function AppLayout() {
   const healthData = health.data;
   const healthError = health.error instanceof Error ? health.error.message : null;
   const prevHealthError = useRef(healthError);
+  const queryClient = useQueryClient();
 
-  // Bootstrap auth once on mount; the query client will start driving fetches
-  // the moment `authReady` flips on (enables SSE, hooks poll as fallback).
+  // Bootstrap auth in the background; retries forever until a token is
+  // obtained (backend cold-start is tolerated). authReady flips true the
+  // moment a token arrives so SSE + queries can start.
   useEffect(() => {
     bootstrapAuth().then(() => setAuthReady(true));
   }, []);
@@ -55,6 +59,18 @@ export default function AppLayout() {
       reconnectNow();
     }
   }, [healthError, connected, reconnectNow]);
+
+  // Browser online/offline recovery: when the network returns, immediately
+  // reconnect SSE and refetch all queries (TanStack's refetchOnReconnect
+  // covers stale queries but SSE needs a nudge).
+  useEffect(() => {
+    const onOnline = () => {
+      reconnectNow();
+      queryClient.invalidateQueries();
+    };
+    window.addEventListener('online', onOnline);
+    return () => window.removeEventListener('online', onOnline);
+  }, [reconnectNow, queryClient]);
 
   const uptimeStr = () => {
     if (!healthData) return '--';
@@ -101,6 +117,7 @@ export default function AppLayout() {
 
       {/* Main */}
       <div className="flex-1 flex flex-col overflow-hidden">
+        <SystemStatusBanner />
         {/* Header */}
         <header className="h-11 bg-surface border-b border-border flex items-center justify-between px-4 shrink-0">
           <div className="flex items-center gap-4 text-xs">

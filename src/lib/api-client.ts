@@ -158,7 +158,7 @@ export interface SessionDetail {
 // ── Auth token ────────────────────────────────────────
 
 let _token: string | null = null;
-let _bootstrapped = false;
+let _bootstrapInFlight: Promise<boolean> | null = null;
 
 export function setApiToken(token: string | null) {
   _token = token;
@@ -168,28 +168,41 @@ export function setApiToken(token: string | null) {
 
 /**
  * Auto-fetch token from backend bootstrap endpoint (localhost only).
- * Called once on app startup — no manual paste needed.
+ * Called on app startup — retries forever in the background until a token
+ * is obtained, so a cold backend at launch doesn't leave the app stuck.
+ *
+ * Idempotent: repeated calls return the same in-flight promise; once
+ * resolved with a token, subsequent calls are a no-op.
  */
-export async function bootstrapAuth(): Promise<boolean> {
-  if (_bootstrapped) return hasApiToken();
-  _bootstrapped = true;
+export function bootstrapAuth(): Promise<boolean> {
+  if (hasApiToken()) return Promise.resolve(true);
+  if (_bootstrapInFlight) return _bootstrapInFlight;
 
-  // Already have a token? Keep it.
-  if (hasApiToken()) return true;
-
-  try {
-    const res = await fetch(`${API}/auth/bootstrap`);
-    if (res.ok) {
-      const { token } = (await res.json()) as { token: string };
-      if (token) {
-        setApiToken(token);
-        return true;
+  _bootstrapInFlight = (async () => {
+    let attempt = 0;
+    // Retry forever with capped exponential backoff (1s → 30s)
+    // until we either get a token or the tab closes.
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      try {
+        const res = await fetch(`${API}/auth/bootstrap`);
+        if (res.ok) {
+          const { token } = (await res.json()) as { token: string };
+          if (token) {
+            setApiToken(token);
+            return true;
+          }
+        }
+      } catch {
+        // backend unreachable — retry below
       }
+      const delay = Math.min(1000 * 2 ** Math.min(attempt, 4), 30_000);
+      attempt += 1;
+      await new Promise((r) => setTimeout(r, delay));
     }
-  } catch {
-    // Backend not reachable — no token
-  }
-  return false;
+  })();
+
+  return _bootstrapInFlight;
 }
 
 export function getApiToken(): string | null {
