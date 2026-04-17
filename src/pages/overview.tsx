@@ -1,4 +1,5 @@
-import { useVinyanStore } from '@/store/vinyan-store';
+import { useMetrics } from '@/hooks/use-metrics';
+import { useEventsStore } from '@/store/vinyan-store';
 import { cn, timeAgo, summarizePayload } from '@/lib/utils';
 import { StatCard } from '@/components/ui/stat-card';
 import { EventBadge } from '@/components/ui/badge';
@@ -56,15 +57,15 @@ function GateBadge({ label, ready }: { label: string; ready: boolean }) {
 }
 
 export default function Overview() {
-  const metrics = useVinyanStore((s) => s.metrics);
-  const events = useVinyanStore((s) => s.events);
-  const healthError = useVinyanStore((s) => s.healthError);
+  const { data: metrics, error } = useMetrics();
+  const events = useEventsStore((s) => s.events);
 
-  if (healthError) {
+  if (error && !metrics) {
+    const message = error instanceof Error ? error.message : 'Connection failed';
     return (
       <div className="bg-surface rounded-lg border border-red/30 p-6 text-center">
         <div className="text-red text-sm font-medium mb-1">Cannot connect to Vinyan backend</div>
-        <div className="text-text-dim text-xs">{healthError}</div>
+        <div className="text-text-dim text-xs">{message}</div>
         <div className="text-text-dim text-xs mt-2">Make sure <code className="bg-bg px-1 rounded">bun src/cli/index.ts serve</code> is running on port 3927</div>
       </div>
     );

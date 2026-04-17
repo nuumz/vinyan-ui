@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { useVinyanStore } from '@/store/vinyan-store';
+import { useEventsStore } from '@/store/vinyan-store';
 import { EventBadge } from '@/components/ui/badge';
 import { PageHeader } from '@/components/ui/page-header';
 import { timeAgo } from '@/lib/utils';
@@ -15,14 +15,20 @@ const EVENT_TYPES = [
 ] as const;
 
 export default function Events() {
-  const events = useVinyanStore((s) => s.events);
-  const clearEvents = useVinyanStore((s) => s.clearEvents);
+  const events = useEventsStore((s) => s.events);
+  const clearEvents = useEventsStore((s) => s.clearEvents);
   const [filter, setFilter] = useState('');
   const [expanded, setExpanded] = useState<string | null>(null);
 
+  // Precompute preview strings once per event (stringify in render hot path is
+  // expensive with 500 rows). Preview truncates at 100 chars for the summary.
   const filtered = useMemo(() => {
-    if (!filter) return events;
-    return events.filter((e) => e.event.includes(filter));
+    const matched = filter ? events.filter((e) => e.event.includes(filter)) : events;
+    return matched.map((e, i) => ({
+      event: e,
+      key: `${e.event}-${e.ts}-${i}`,
+      preview: JSON.stringify(e.payload).slice(0, 100),
+    }));
   }, [events, filter]);
 
   return (
@@ -62,29 +68,24 @@ export default function Events() {
           {filtered.length === 0 ? (
             <div className="text-sm text-text-dim text-center py-8">Waiting for events...</div>
           ) : (
-            filtered.map((e, i) => {
-              const stableKey = `${e.event}-${e.ts}-${i}`;
-              return (
-              <div key={stableKey} className="border-b border-border/50 hover:bg-white/[0.02]">
+            filtered.map(({ event: e, key, preview }) => (
+              <div key={key} className="border-b border-border/50 hover:bg-white/[0.02]">
                 <button
                   type="button"
                   className="w-full flex items-center gap-3 px-4 py-2 text-xs text-left"
-                  onClick={() => setExpanded(expanded === stableKey ? null : stableKey)}
+                  onClick={() => setExpanded(expanded === key ? null : key)}
                 >
                   <EventBadge event={e.event} />
-                  <span className="text-text-dim truncate flex-1">
-                    {JSON.stringify(e.payload).slice(0, 100)}
-                  </span>
+                  <span className="text-text-dim truncate flex-1">{preview}</span>
                   <span className="text-text-dim tabular-nums shrink-0">{timeAgo(e.ts)}</span>
                 </button>
-                {expanded === stableKey && (
+                {expanded === key && (
                   <pre className="px-4 pb-3 text-xs text-gray-400 overflow-auto max-h-60">
                     {JSON.stringify(e.payload, null, 2)}
                   </pre>
                 )}
               </div>
-              );
-            })
+            ))
           )}
         </div>
       </div>

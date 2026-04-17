@@ -1,9 +1,9 @@
-import { useVinyanStore } from '@/store/vinyan-store';
+import { useRules } from '@/hooks/use-rules';
 import { PageHeader } from '@/components/ui/page-header';
 import { EmptyState } from '@/components/ui/empty-state';
 
 export default function Rules() {
-  const rules = useVinyanStore((s) => s.rules);
+  const { data: rules = [] } = useRules();
 
   return (
     <div className="space-y-4">

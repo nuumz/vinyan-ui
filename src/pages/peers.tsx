@@ -1,10 +1,10 @@
 import { useMemo } from 'react';
-import { useVinyanStore } from '@/store/vinyan-store';
+import { useEventsStore } from '@/store/vinyan-store';
 import { PageHeader } from '@/components/ui/page-header';
 import { EmptyState } from '@/components/ui/empty-state';
 
 export default function Peers() {
-  const events = useVinyanStore((s) => s.events);
+  const events = useEventsStore((s) => s.events);
 
   const peerEvents = useMemo(
     () => events.filter((e) => e.event.includes('a2a') || e.event.includes('peer')),

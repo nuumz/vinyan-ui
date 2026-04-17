@@ -13,8 +13,8 @@ import {
   Wallet,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { useVinyanStore } from '@/store/vinyan-store';
-import { useSSE } from '@/lib/use-sse';
+import { useHealth } from '@/hooks/use-health';
+import { useSSESync } from '@/hooks/use-sse-sync';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { AuthButton } from '@/components/auth-button';
 import { bootstrapAuth } from '@/lib/api-client';
@@ -33,43 +33,32 @@ const navItems = [
 ];
 
 export default function AppLayout() {
-  const startPolling = useVinyanStore((s) => s.startPolling);
-  const stopPolling = useVinyanStore((s) => s.stopPolling);
-  const health = useVinyanStore((s) => s.health);
-  const healthError = useVinyanStore((s) => s.healthError);
-  const handleSSEEvent = useVinyanStore((s) => s.handleSSEEvent);
-  const [ready, setReady] = useState(false);
+  const [authReady, setAuthReady] = useState(false);
+  const health = useHealth();
+  const healthData = health.data;
+  const healthError = health.error instanceof Error ? health.error.message : null;
   const prevHealthError = useRef(healthError);
 
-  // Bootstrap auth then start polling
+  // Bootstrap auth once on mount; the query client will start driving fetches
+  // the moment `authReady` flips on (enables SSE, hooks poll as fallback).
   useEffect(() => {
-    bootstrapAuth().then(() => {
-      setReady(true);
-      startPolling();
-    });
-    return () => stopPolling();
-  }, [startPolling, stopPolling]);
+    bootstrapAuth().then(() => setAuthReady(true));
+  }, []);
 
-  // SSE connects only after ready
-  const { connected, reconnectNow, reconnecting } = useSSE({
-    path: '/api/v1/events',
-    onEvent: handleSSEEvent,
-    enabled: ready,
-  });
+  const { connected, reconnectNow, reconnecting } = useSSESync({ enabled: authReady });
 
-  // When health recovers from error, force SSE reconnect + full refresh
+  // When health recovers from error, force a reconnect so the UI resyncs fast.
   useEffect(() => {
     const wasError = prevHealthError.current;
     prevHealthError.current = healthError;
     if (wasError && !healthError && !connected) {
       reconnectNow();
-      useVinyanStore.getState().refreshAll();
     }
   }, [healthError, connected, reconnectNow]);
 
   const uptimeStr = () => {
-    if (!health) return '--';
-    const s = Math.floor(health.uptime_ms / 1000);
+    if (!healthData) return '--';
+    const s = Math.floor(healthData.uptime_ms / 1000);
     if (s < 60) return `${s}s`;
     if (s < 3600) return `${Math.floor(s / 60)}m`;
     return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
@@ -127,9 +116,15 @@ export default function AppLayout() {
                 )}
               />
               <span className="text-text-dim">
-                {!ready ? 'Connecting...' : connected ? 'Connected' : reconnecting ? 'Reconnecting...' : 'Disconnected'}
+                {!authReady
+                  ? 'Connecting...'
+                  : connected
+                    ? 'Connected'
+                    : reconnecting
+                      ? 'Reconnecting...'
+                      : 'Disconnected'}
               </span>
-              {!connected && ready && !reconnecting && (
+              {!connected && authReady && !reconnecting && (
                 <button
                   type="button"
                   className="px-2 py-0.5 text-xs rounded bg-accent/10 text-accent border border-accent/30 hover:bg-accent/20"
@@ -139,7 +134,7 @@ export default function AppLayout() {
                 </button>
               )}
             </div>
-            {health && <span className="text-text-dim">Uptime: {uptimeStr()}</span>}
+            {healthData && <span className="text-text-dim">Uptime: {uptimeStr()}</span>}
             {healthError && <span className="text-red">{healthError}</span>}
           </div>
           <div className="flex items-center gap-1.5 text-xs">
@@ -148,7 +143,7 @@ export default function AppLayout() {
         </header>
 
         {/* Content */}
-        <main className="flex-1 overflow-auto p-6">
+        <main className="flex-1 overflow-auto p-6 relative">
           <ErrorBoundary>
             <Outlet />
           </ErrorBoundary>

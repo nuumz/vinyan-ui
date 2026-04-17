@@ -1,18 +1,10 @@
-import { useEffect } from 'react';
-import { useVinyanStore } from '@/store/vinyan-store';
+import { useEconomy } from '@/hooks/use-economy';
 import { cn } from '@/lib/utils';
 import { PageHeader } from '@/components/ui/page-header';
 import { CardSkeleton } from '@/components/ui/skeleton';
 
 export default function Economy() {
-  const economy = useVinyanStore((s) => s.economy);
-  const fetchEconomy = useVinyanStore((s) => s.fetchEconomy);
-
-  useEffect(() => {
-    fetchEconomy();
-    const timer = setInterval(fetchEconomy, 10_000);
-    return () => clearInterval(timer);
-  }, [fetchEconomy]);
+  const { data: economy } = useEconomy();
 
   if (!economy) {
     return (

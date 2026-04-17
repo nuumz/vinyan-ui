@@ -1,39 +1,44 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useLayoutEffect, useState, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { useVinyanStore } from '@/store/vinyan-store';
+import { useSessionMessages, useSendMessage } from '@/hooks/use-chat';
 import { cn } from '@/lib/utils';
 import { ArrowLeft, Send, Loader2 } from 'lucide-react';
 
 export default function SessionChat() {
   const { id } = useParams<{ id: string }>();
-  const messages = useVinyanStore((s) => s.chatMessages);
-  const sending = useVinyanStore((s) => s.chatSending);
-  const pendingClarifications = useVinyanStore((s) => s.chatPendingClarifications);
-  const openChat = useVinyanStore((s) => s.openChat);
-  const sendChatMessage = useVinyanStore((s) => s.sendChatMessage);
-  const closeChat = useVinyanStore((s) => s.closeChat);
+  const sessionId = id ?? null;
+  const messagesQuery = useSessionMessages(sessionId);
+  const sendMessage = useSendMessage(sessionId);
+
+  const messages = messagesQuery.data?.messages ?? [];
+  const pendingClarifications = messagesQuery.data?.session?.pendingClarifications ?? [];
+  const sending = sendMessage.isPending;
 
   const [input, setInput] = useState('');
   const bottomRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (id) openChat(id);
-    return () => closeChat();
-  }, [id, openChat, closeChat]);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, sending]);
 
-  const handleSend = async () => {
+  // Auto-grow textarea up to 6 lines
+  useLayoutEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+  }, [input]);
+
+  const handleSend = () => {
     const text = input.trim();
     if (!text || sending) return;
     setInput('');
-    await sendChatMessage(text);
+    sendMessage.mutate(text);
   };
 
   return (
-    <div className="flex flex-col h-full -m-6">
+    <div className="absolute inset-0 flex flex-col bg-bg">
       {/* Header */}
       <div className="h-12 bg-surface border-b border-border flex items-center gap-3 px-4 shrink-0">
         <Link to="/sessions" className="text-text-dim hover:text-text transition-colors">
@@ -46,7 +51,7 @@ export default function SessionChat() {
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-auto p-4 space-y-4">
+      <div className="flex-1 overflow-auto px-4 py-4 space-y-4">
         {messages.length === 0 && !sending && (
           <div className="text-text-dim text-sm text-center py-12">
             Send a message to start the conversation
@@ -79,30 +84,47 @@ export default function SessionChat() {
         <div ref={bottomRef} />
       </div>
 
-      {/* Input */}
-      <div className="bg-surface border-t border-border p-4 shrink-0">
-        <div className="flex gap-2">
-          <input
-            className="flex-1 bg-bg border border-border rounded-lg px-4 py-2.5 text-sm text-text placeholder-gray-500 focus:outline-none focus:border-accent"
-            placeholder={pendingClarifications.length > 0 ? 'Answer the clarification...' : 'Type a message...'}
+      {/* Input — integrated pill with embedded send button */}
+      <div className="shrink-0 px-4 pb-4 pt-2">
+        <div
+          className={cn(
+            'flex items-end gap-2 bg-surface border border-border rounded-xl px-3 py-2 transition-colors',
+            'focus-within:border-accent/60',
+          )}
+        >
+          <textarea
+            ref={textareaRef}
+            rows={1}
+            className="flex-1 bg-transparent text-sm text-text placeholder-gray-500 focus:outline-none resize-none leading-6 py-1 max-h-40"
+            placeholder={
+              pendingClarifications.length > 0
+                ? 'Answer the clarification...'
+                : 'Type a message...  (Enter to send · Shift+Enter for newline)'
+            }
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSend()}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                handleSend();
+              }
+            }}
             disabled={sending}
             autoFocus
           />
           <button
             type="button"
             className={cn(
-              'px-4 py-2.5 rounded-lg font-medium text-sm transition-colors',
+              'shrink-0 w-8 h-8 rounded-lg flex items-center justify-center transition-colors',
               input.trim() && !sending
                 ? 'bg-accent text-white hover:bg-accent/80'
-                : 'bg-gray-800 text-gray-500 cursor-not-allowed',
+                : 'bg-border/50 text-text-dim cursor-not-allowed',
             )}
             onClick={handleSend}
             disabled={!input.trim() || sending}
+            aria-label="Send"
           >
-            <Send size={16} />
+            {sending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
           </button>
         </div>
       </div>

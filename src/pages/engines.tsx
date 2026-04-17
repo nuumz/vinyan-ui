@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
-import { useVinyanStore } from '@/store/vinyan-store';
+import { useWorkers } from '@/hooks/use-workers';
+import { useTasks } from '@/hooks/use-tasks';
+import { useMetrics } from '@/hooks/use-metrics';
 import { StatusBadge } from '@/components/ui/badge';
 import { StatCard } from '@/components/ui/stat-card';
 import { PageHeader } from '@/components/ui/page-header';
@@ -37,12 +39,12 @@ function emptyStats(): EngineStats {
 }
 
 export default function Engines() {
-  const engines = useVinyanStore((s) => s.workers);
-  const tasks = useVinyanStore((s) => s.tasks);
-  const tasksLoading = useVinyanStore((s) => s.tasksLoading);
-  const metrics = useVinyanStore((s) => s.metrics);
-  const fetchWorkers = useVinyanStore((s) => s.fetchWorkers);
-  const fetchTasks = useVinyanStore((s) => s.fetchTasks);
+  const workersQuery = useWorkers();
+  const tasksQuery = useTasks();
+  const metricsQuery = useMetrics();
+  const engines = workersQuery.data ?? [];
+  const tasks = tasksQuery.data ?? [];
+  const metrics = metricsQuery.data ?? null;
 
   const [filter, setFilter] = useState<EngineStatus | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -90,11 +92,12 @@ export default function Engines() {
   );
 
   const handleRefresh = () => {
-    fetchWorkers();
-    fetchTasks();
+    workersQuery.refetch();
+    tasksQuery.refetch();
   };
 
   const loading = engines.length === 0 && metrics === null;
+  const isFetching = workersQuery.isFetching || tasksQuery.isFetching;
 
   return (
     <div className="space-y-4">
@@ -108,7 +111,7 @@ export default function Engines() {
             onClick={handleRefresh}
             title="Refresh"
           >
-            <RefreshCw size={14} className={tasksLoading ? 'animate-spin' : ''} />
+            <RefreshCw size={14} className={isFetching ? 'animate-spin' : ''} />
           </button>
         }
       />
@@ -404,9 +407,6 @@ function FilterChip({
   );
 }
 
-// Strip "worker-" prefix and the embedded model path so the engine identifier
-// reads independently of the model column. Falls back to the full id if the
-// expected pattern is not present.
 function shortEngineId(id: string, modelId: string): string {
   const trimmed = id.startsWith('worker-') ? id.slice('worker-'.length) : id;
   if (modelId && trimmed.startsWith(modelId)) {

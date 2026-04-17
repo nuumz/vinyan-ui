@@ -1,11 +1,11 @@
-import { useVinyanStore } from '@/store/vinyan-store';
+import { useFacts } from '@/hooks/use-facts';
 import { RefreshCw } from 'lucide-react';
 import { PageHeader } from '@/components/ui/page-header';
 import { EmptyState } from '@/components/ui/empty-state';
 
 export default function WorldGraph() {
-  const facts = useVinyanStore((s) => s.facts);
-  const fetchFacts = useVinyanStore((s) => s.fetchFacts);
+  const factsQuery = useFacts();
+  const facts = factsQuery.data ?? [];
 
   return (
     <div className="space-y-4">
@@ -16,10 +16,10 @@ export default function WorldGraph() {
           <button
             type="button"
             className="p-1.5 rounded text-text-dim hover:text-text hover:bg-white/5 transition-colors"
-            onClick={fetchFacts}
+            onClick={() => factsQuery.refetch()}
             title="Refresh"
           >
-            <RefreshCw size={14} />
+            <RefreshCw size={14} className={factsQuery.isFetching ? 'animate-spin' : ''} />
           </button>
         }
       />

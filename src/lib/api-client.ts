@@ -216,44 +216,88 @@ function authHeaders(method?: string): Record<string, string> {
 const TIMEOUT_MS = 30_000;
 const MAX_RETRIES = 2;
 
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly path: string,
+    readonly body?: string,
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
+function backoffMs(attempt: number): number {
+  // 500, 1000, 2000 + up to 250ms jitter → avoid thundering herd
+  const base = 500 * 2 ** attempt;
+  return base + Math.floor(Math.random() * 250);
+}
+
 async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    // If caller passed a signal, don't override; else apply our own timeout.
+    const externalSignal = init?.signal ?? null;
+    const controller = externalSignal ? null : new AbortController();
+    const timeout = controller ? setTimeout(() => controller.abort(), TIMEOUT_MS) : null;
 
     try {
       const res = await fetch(`${API}${path}`, {
         headers: authHeaders(init?.method),
         ...init,
-        signal: controller.signal,
+        signal: externalSignal ?? controller?.signal,
       });
-      clearTimeout(timeout);
+      if (timeout) clearTimeout(timeout);
 
       if (!res.ok) {
         const body = await res.text().catch(() => '');
-        const err = new Error(`API ${res.status}: ${body || res.statusText}`);
-        // Retry on 5xx server errors, not 4xx client errors
-        if (res.status >= 500 && attempt < MAX_RETRIES) {
+        const err = new ApiError(
+          `API ${res.status} ${res.statusText || ''} ${path}${body ? ` — ${body.slice(0, 200)}` : ''}`.trim(),
+          res.status,
+          path,
+          body,
+        );
+        // Retry only on 5xx / 429 — client errors (4xx) are our fault, no retry
+        const retriable = res.status >= 500 || res.status === 429;
+        if (retriable && attempt < MAX_RETRIES) {
           lastError = err;
-          await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+          await new Promise((r) => setTimeout(r, backoffMs(attempt)));
           continue;
         }
         throw err;
       }
 
+      // Guard: server must actually return JSON. Error pages (HTML) otherwise
+      // throw a cryptic "Unexpected token <" that masks the real failure.
+      const contentType = res.headers.get('content-type') ?? '';
+      if (!contentType.toLowerCase().includes('application/json')) {
+        const body = await res.text().catch(() => '');
+        throw new ApiError(
+          `Expected JSON from ${path} but got "${contentType || 'no content-type'}"${body ? ` — ${body.slice(0, 200)}` : ''}`,
+          res.status,
+          path,
+          body,
+        );
+      }
+
       return (await res.json()) as T;
     } catch (err) {
-      clearTimeout(timeout);
+      if (timeout) clearTimeout(timeout);
+      // Caller-initiated cancel: do NOT retry, propagate quietly.
+      if (externalSignal?.aborted) throw err;
       if (err instanceof DOMException && err.name === 'AbortError') {
         lastError = new Error(`Request timeout after ${TIMEOUT_MS / 1000}s: ${path}`);
+      } else if (err instanceof ApiError) {
+        // Non-retriable API errors already thrown above — bubble up
+        throw err;
       } else {
         lastError = err instanceof Error ? err : new Error(String(err));
       }
       // Retry on network errors
       if (attempt < MAX_RETRIES) {
-        await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+        await new Promise((r) => setTimeout(r, backoffMs(attempt)));
         continue;
       }
     }

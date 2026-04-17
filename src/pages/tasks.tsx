@@ -1,36 +1,42 @@
 import { useState } from 'react';
-import { useVinyanStore } from '@/store/vinyan-store';
+import { useTasks, useSubmitTask, useCancelTask } from '@/hooks/use-tasks';
+import { useApprovals, useResolveApproval } from '@/hooks/use-approvals';
 import { StatusBadge } from '@/components/ui/badge';
 import { PageHeader } from '@/components/ui/page-header';
 import { toast } from '@/store/toast-store';
 import { RefreshCw, ShieldAlert } from 'lucide-react';
 
 export default function Tasks() {
-  const tasks = useVinyanStore((s) => s.tasks);
-  const tasksLoading = useVinyanStore((s) => s.tasksLoading);
-  const pendingApprovals = useVinyanStore((s) => s.pendingApprovals);
-  const resolveApproval = useVinyanStore((s) => s.resolveApproval);
-  const fetchTasks = useVinyanStore((s) => s.fetchTasks);
-  const submitTask = useVinyanStore((s) => s.submitTask);
-  const cancelTask = useVinyanStore((s) => s.cancelTask);
+  const tasksQuery = useTasks();
+  const tasks = tasksQuery.data ?? [];
+  const approvalsQuery = useApprovals();
+  const pendingApprovals = approvalsQuery.data ?? [];
+  const submitTask = useSubmitTask();
+  const cancelTask = useCancelTask();
+  const resolveApproval = useResolveApproval();
+
   const [showForm, setShowForm] = useState(false);
   const [goal, setGoal] = useState('');
   const [taskType, setTaskType] = useState<'reasoning' | 'code'>('reasoning');
-  const [submitting, setSubmitting] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
 
   const handleSubmit = async () => {
     if (!goal.trim()) return;
-    setSubmitting(true);
     try {
-      await submitTask({ goal, taskType, budget: { maxTokens: 50000, maxDurationMs: 60000, maxRetries: 3 } });
+      await submitTask.mutateAsync({
+        goal,
+        taskType,
+        budget: { maxTokens: 50000, maxDurationMs: 60000, maxRetries: 3 },
+      });
       setGoal('');
       setShowForm(false);
       toast.success('Task submitted');
-    } finally {
-      setSubmitting(false);
+    } catch {
+      // toast already surfaced by mutation onError
     }
   };
+
+  const isRefetching = tasksQuery.isFetching;
 
   return (
     <div className="space-y-4">
@@ -42,10 +48,10 @@ export default function Tasks() {
             <button
               type="button"
               className="p-1.5 rounded text-text-dim hover:text-text hover:bg-white/5 transition-colors"
-              onClick={fetchTasks}
+              onClick={() => tasksQuery.refetch()}
               title="Refresh"
             >
-              <RefreshCw size={14} className={tasksLoading ? 'animate-spin' : ''} />
+              <RefreshCw size={14} className={isRefetching ? 'animate-spin' : ''} />
             </button>
             <button
               type="button"
@@ -88,9 +94,9 @@ export default function Tasks() {
               type="button"
               className="px-4 py-2 rounded font-medium text-sm bg-green/20 text-green border border-green/30 hover:bg-green/30 transition-colors mt-5 disabled:opacity-50"
               onClick={handleSubmit}
-              disabled={submitting || !goal.trim()}
+              disabled={submitTask.isPending || !goal.trim()}
             >
-              {submitting ? 'Submitting...' : 'Submit'}
+              {submitTask.isPending ? 'Submitting...' : 'Submit'}
             </button>
           </div>
         </div>
@@ -109,14 +115,16 @@ export default function Tasks() {
               <button
                 type="button"
                 className="px-3 py-1 text-xs rounded bg-green/20 text-green border border-green/30 hover:bg-green/30 transition-colors"
-                onClick={() => resolveApproval(taskId, 'approved')}
+                onClick={() => resolveApproval.mutate({ taskId, decision: 'approved' })}
+                disabled={resolveApproval.isPending}
               >
                 Approve
               </button>
               <button
                 type="button"
                 className="px-3 py-1 text-xs rounded bg-red/20 text-red border border-red/30 hover:bg-red/30 transition-colors"
-                onClick={() => resolveApproval(taskId, 'rejected')}
+                onClick={() => resolveApproval.mutate({ taskId, decision: 'rejected' })}
+                disabled={resolveApproval.isPending}
               >
                 Reject
               </button>
@@ -162,7 +170,10 @@ export default function Tasks() {
                       <button
                         type="button"
                         className="px-2 py-0.5 text-xs rounded bg-red/20 text-red border border-red/30 hover:bg-red/30 transition-colors opacity-0 group-hover:opacity-100"
-                        onClick={() => { cancelTask(t.taskId); toast.info('Task cancelled'); }}
+                        onClick={() => {
+                          cancelTask.mutate(t.taskId);
+                          toast.info('Task cancelled');
+                        }}
                       >
                         Cancel
                       </button>

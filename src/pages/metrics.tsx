@@ -1,27 +1,16 @@
-import { useEffect, useState } from 'react';
-import { useVinyanStore } from '@/store/vinyan-store';
-import { api } from '@/lib/api-client';
+import { useMemo } from 'react';
+import { useMetrics, usePrometheus } from '@/hooks/use-metrics';
 import { PageHeader } from '@/components/ui/page-header';
 import { CardSkeleton } from '@/components/ui/skeleton';
 
 export default function Metrics() {
-  const metrics = useVinyanStore((s) => s.metrics);
-  const [prometheus, setPrometheus] = useState<Record<string, number>>({});
+  const { data: metrics } = useMetrics();
+  const { data: prometheusText } = usePrometheus();
 
-  useEffect(() => {
-    loadPrometheus();
-    const t = setInterval(loadPrometheus, 10_000);
-    return () => clearInterval(t);
-  }, []);
-
-  async function loadPrometheus() {
-    try {
-      const text = await api.getPrometheusMetrics();
-      setPrometheus(parsePrometheus(text));
-    } catch {
-      /* silent */
-    }
-  }
+  const prometheus = useMemo(
+    () => (prometheusText ? parsePrometheus(prometheusText) : {}),
+    [prometheusText],
+  );
 
   if (!metrics) {
     return (
