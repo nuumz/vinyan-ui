@@ -22,7 +22,7 @@ import { bootstrapAuth } from '@/lib/api-client';
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Overview' },
   { to: '/tasks', icon: ListTodo, label: 'Tasks' },
-  { to: '/workers', icon: Bot, label: 'Workers' },
+  { to: '/engines', icon: Bot, label: 'Engines' },
   { to: '/sessions', icon: MessageSquare, label: 'Sessions' },
   { to: '/economy', icon: Wallet, label: 'Economy' },
   { to: '/events', icon: Activity, label: 'Events' },

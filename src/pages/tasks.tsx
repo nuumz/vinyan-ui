@@ -3,11 +3,13 @@ import { useVinyanStore } from '@/store/vinyan-store';
 import { StatusBadge } from '@/components/ui/badge';
 import { PageHeader } from '@/components/ui/page-header';
 import { toast } from '@/store/toast-store';
-import { RefreshCw } from 'lucide-react';
+import { RefreshCw, ShieldAlert } from 'lucide-react';
 
 export default function Tasks() {
   const tasks = useVinyanStore((s) => s.tasks);
   const tasksLoading = useVinyanStore((s) => s.tasksLoading);
+  const pendingApprovals = useVinyanStore((s) => s.pendingApprovals);
+  const resolveApproval = useVinyanStore((s) => s.resolveApproval);
   const fetchTasks = useVinyanStore((s) => s.fetchTasks);
   const submitTask = useVinyanStore((s) => s.submitTask);
   const cancelTask = useVinyanStore((s) => s.cancelTask);
@@ -91,6 +93,35 @@ export default function Tasks() {
               {submitting ? 'Submitting...' : 'Submit'}
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Pending approvals */}
+      {pendingApprovals.length > 0 && (
+        <div className="space-y-2">
+          {pendingApprovals.map((taskId) => (
+            <div key={taskId} className="bg-yellow/5 border border-yellow/20 rounded-lg px-4 py-3 flex items-center gap-3">
+              <ShieldAlert size={16} className="text-yellow shrink-0" />
+              <div className="flex-1 text-sm">
+                <span className="text-yellow font-medium">Approval required</span>
+                <span className="text-text-dim ml-2 font-mono text-xs">{taskId}</span>
+              </div>
+              <button
+                type="button"
+                className="px-3 py-1 text-xs rounded bg-green/20 text-green border border-green/30 hover:bg-green/30 transition-colors"
+                onClick={() => resolveApproval(taskId, 'approved')}
+              >
+                Approve
+              </button>
+              <button
+                type="button"
+                className="px-3 py-1 text-xs rounded bg-red/20 text-red border border-red/30 hover:bg-red/30 transition-colors"
+                onClick={() => resolveApproval(taskId, 'rejected')}
+              >
+                Reject
+              </button>
+            </div>
+          ))}
         </div>
       )}
 

@@ -24,6 +24,7 @@ export interface SystemMetrics {
     demoted: number;
     retired: number;
     traceDiversity: number;
+    fleetGini: number;
   };
   dataGates: {
     sleepCycle: boolean;
@@ -212,16 +213,53 @@ function authHeaders(method?: string): Record<string, string> {
   return h;
 }
 
+const TIMEOUT_MS = 30_000;
+const MAX_RETRIES = 2;
+
 async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API}${path}`, {
-    headers: authHeaders(init?.method),
-    ...init,
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Error(`API ${res.status}: ${body || res.statusText}`);
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+    try {
+      const res = await fetch(`${API}${path}`, {
+        headers: authHeaders(init?.method),
+        ...init,
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        const err = new Error(`API ${res.status}: ${body || res.statusText}`);
+        // Retry on 5xx server errors, not 4xx client errors
+        if (res.status >= 500 && attempt < MAX_RETRIES) {
+          lastError = err;
+          await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+          continue;
+        }
+        throw err;
+      }
+
+      return (await res.json()) as T;
+    } catch (err) {
+      clearTimeout(timeout);
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        lastError = new Error(`Request timeout after ${TIMEOUT_MS / 1000}s: ${path}`);
+      } else {
+        lastError = err instanceof Error ? err : new Error(String(err));
+      }
+      // Retry on network errors
+      if (attempt < MAX_RETRIES) {
+        await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+        continue;
+      }
+    }
   }
-  return res.json() as Promise<T>;
+
+  throw lastError ?? new Error(`Failed after ${MAX_RETRIES + 1} attempts: ${path}`);
 }
 
 // ── Endpoints ──────────────────────────────────────────
@@ -252,6 +290,14 @@ export const api = {
   cancelTask: (id: string) =>
     fetchJSON<{ taskId: string; status: string }>(`/tasks/${id}`, { method: 'DELETE' }),
 
+  // Approval (A6)
+  getPendingApprovals: () => fetchJSON<{ pending: string[] }>('/approvals'),
+  approveTask: (taskId: string, decision: 'approved' | 'rejected') =>
+    fetchJSON<{ taskId: string; decision: string }>(`/tasks/${taskId}/approval`, {
+      method: 'POST',
+      body: JSON.stringify({ decision }),
+    }),
+
   // Sessions (auth required)
   getSessions: () => fetchJSON<{ sessions: Session[] }>('/sessions'),
   createSession: (source = 'ui') =>
@@ -272,4 +318,78 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ content, showThinking: options?.showThinking }),
     }),
+
+  /**
+   * Send a message using SSE streaming. Returns an async generator that
+   * yields SSE events as they arrive, and the final task result.
+   *
+   * This avoids the 30s fetch timeout that causes duplicate submissions
+   * on long-running agentic-workflow tasks.
+   */
+  sendMessageStream: async (
+    sessionId: string,
+    content: string,
+    options?: { showThinking?: boolean; onEvent?: (event: SSEEvent) => void },
+  ): Promise<TaskResult> => {
+    const token = getApiToken();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers.Authorization = `Bearer ${token}`;
+
+    const res = await fetch(`${API}/sessions/${sessionId}/messages`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ content, showThinking: options?.showThinking, stream: true }),
+    });
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new Error(`API ${res.status}: ${body || res.statusText}`);
+    }
+
+    const reader = res.body?.getReader();
+    if (!reader) throw new Error('No response body');
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let finalResult: TaskResult | null = null;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      // SSE messages are separated by double newlines.
+      // Each message may have multiple fields: event:, data:, etc.
+      const blocks = buffer.split('\n\n');
+      buffer = blocks.pop() ?? ''; // Keep incomplete block in buffer
+
+      for (const block of blocks) {
+        if (!block.trim()) continue;
+        // Parse SSE fields from the block
+        let eventData = '';
+        for (const line of block.split('\n')) {
+          if (line.startsWith('data: ')) {
+            eventData = line.slice(6);
+          }
+          // 'event:' lines are informational — actual data is in the data field
+          // Heartbeat comments (: ...) are ignored
+        }
+        if (!eventData) continue;
+
+        try {
+          const parsed = JSON.parse(eventData) as SSEEvent & { payload: Record<string, unknown> };
+          options?.onEvent?.(parsed);
+
+          if (parsed.event === 'task:complete') {
+            finalResult = (parsed.payload.result as TaskResult) ?? null;
+          }
+        } catch {
+          // Malformed data — skip
+        }
+      }
+    }
+
+    if (!finalResult) throw new Error('Stream ended without task:complete');
+    return finalResult;
+  },
 };

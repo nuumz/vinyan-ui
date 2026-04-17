@@ -6,7 +6,7 @@ import { ToastContainer } from './components/toast-container';
 
 const Overview = lazy(() => import('./pages/overview'));
 const Tasks = lazy(() => import('./pages/tasks'));
-const Workers = lazy(() => import('./pages/workers'));
+const Engines = lazy(() => import('./pages/engines'));
 const Sessions = lazy(() => import('./pages/sessions'));
 const SessionChat = lazy(() => import('./pages/session-chat'));
 const Economy = lazy(() => import('./pages/economy'));
@@ -28,7 +28,8 @@ export default function App() {
           <Route element={<AppLayout />}>
             <Route path="/" element={<Overview />} />
             <Route path="/tasks" element={<Tasks />} />
-            <Route path="/workers" element={<Workers />} />
+            <Route path="/engines" element={<Engines />} />
+            <Route path="/workers" element={<Navigate to="/engines" replace />} />
             <Route path="/sessions" element={<Sessions />} />
             <Route path="/sessions/:id" element={<SessionChat />} />
             <Route path="/economy" element={<Economy />} />

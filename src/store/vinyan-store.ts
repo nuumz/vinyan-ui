@@ -36,6 +36,11 @@ interface VinyanState {
   submitTask: (body: Record<string, unknown>) => Promise<void>;
   cancelTask: (id: string) => Promise<void>;
 
+  // Approvals
+  pendingApprovals: string[];
+  fetchApprovals: () => Promise<void>;
+  resolveApproval: (taskId: string, decision: 'approved' | 'rejected') => Promise<void>;
+
   // Workers
   workers: Worker[];
   fetchWorkers: () => Promise<void>;
@@ -130,6 +135,26 @@ export const useVinyanStore = create<VinyanState>((set, get) => ({
     get().fetchTasks();
   },
 
+  // Approvals
+  pendingApprovals: [],
+  fetchApprovals: async () => {
+    try {
+      const { pending } = await api.getPendingApprovals();
+      set({ pendingApprovals: pending });
+    } catch {
+      /* silent */
+    }
+  },
+  resolveApproval: async (taskId, decision) => {
+    try {
+      await api.approveTask(taskId, decision);
+      get().fetchApprovals();
+      get().fetchTasks();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to resolve approval');
+    }
+  },
+
   // Workers
   workers: [],
   fetchWorkers: async () => {
@@ -216,18 +241,44 @@ export const useVinyanStore = create<VinyanState>((set, get) => ({
     const sessionId = get().chatSessionId;
     if (!sessionId) return null;
     set({ chatSending: true });
+
+    // Optimistically add user message to the UI immediately
+    const optimisticUserMsg: ConversationEntry = {
+      role: 'user',
+      content,
+      taskId: '',
+      timestamp: Date.now(),
+      tokenEstimate: 0,
+    };
+    set((s) => ({ chatMessages: [...s.chatMessages, optimisticUserMsg] }));
+
     try {
-      const { task, session } = await api.sendMessage(sessionId, content);
-      // Reload full history after response
+      // Use streaming to avoid 30s fetch timeout on long tasks.
+      // The SSE stream stays open until task:complete, so tasks that
+      // take 60-300s won't trigger client-side retries.
+      const result = await api.sendMessageStream(sessionId, content, {
+        onEvent: (event) => {
+          // Forward SSE events to the global event store for observability
+          get().handleSSEEvent(event);
+        },
+      });
+
+      // Reload full history after completion (includes formatted assistant response)
       const { messages } = await api.getMessages(sessionId);
       set({
         chatMessages: messages,
         chatSending: false,
-        chatPendingClarifications: session?.pendingClarifications ?? [],
+        chatPendingClarifications: result.clarificationNeeded ?? [],
       });
       get().fetchSessions();
-      return task;
+      return result;
     } catch (err) {
+      // On failure, reload messages to get server-side state (which may
+      // include a partial response or error message from the agent)
+      try {
+        const { messages } = await api.getMessages(sessionId);
+        set({ chatMessages: messages });
+      } catch { /* ignore reload failure */ }
       set({ chatSending: false });
       toast.error(err instanceof Error ? err.message : 'Failed to send message');
       return null;
@@ -252,6 +303,11 @@ export const useVinyanStore = create<VinyanState>((set, get) => ({
     }
     if (e === 'worker:dispatch' || e === 'worker:complete' || e === 'worker:error') {
       get().fetchWorkers();
+    }
+    if (e === 'task:approval_required') {
+      get().fetchApprovals();
+      const p = event.payload as { taskId?: string; riskScore?: number; reason?: string };
+      toast.info(`Approval needed: ${p.reason ?? p.taskId ?? 'high-risk task'}`);
     }
   },
   clearEvents: () => set({ events: [] }),
