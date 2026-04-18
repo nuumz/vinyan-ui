@@ -1,6 +1,6 @@
 import { AlertTriangle, HelpCircle, RefreshCw } from 'lucide-react';
 import type { StreamingTurn } from '@/hooks/use-streaming-turn';
-import { PhaseChip } from './phase-chip';
+import { PhaseTimeline } from './phase-timeline';
 import { ToolCallCard } from './tool-call-card';
 import { OracleVerdictRow } from './oracle-verdict-row';
 import { Markdown } from './markdown';
@@ -28,9 +28,13 @@ export function StreamingBubble({ turn, nowMs, onRetry }: StreamingBubbleProps) 
   return (
     <div className="flex justify-start">
       <div className="max-w-[85%] w-full bg-surface border border-border rounded-lg px-4 py-3 text-sm space-y-2.5">
-        {/* Header: phase chip + elapsed + escalation badge */}
+        {/* Header: phase timeline + elapsed + escalation badge */}
         <div className="flex items-center gap-3 flex-wrap">
-          <PhaseChip phase={turn.currentPhase} active={isRunning} />
+          <PhaseTimeline
+            timings={turn.phaseTimings}
+            currentPhase={turn.currentPhase}
+            status={turn.status}
+          />
           <span className="text-xs text-text-dim tabular-nums">{formatElapsed(elapsed)}</span>
           {turn.escalations > 0 && (
             <span className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-yellow/10 text-yellow border border-yellow/30">

@@ -92,17 +92,6 @@ export default function SessionChat() {
           <StreamingBubble turn={turn} nowMs={nowMs} onRetry={handleRetry} />
         )}
 
-        {!showStreaming && pendingClarifications.length > 0 && (
-          <div className="bg-yellow/5 border border-yellow/20 rounded-lg p-3">
-            <div className="text-xs text-yellow font-medium mb-2">Clarification needed:</div>
-            <ul className="list-disc list-inside text-sm text-text-dim space-y-1">
-              {pendingClarifications.map((q) => (
-                <li key={q}>{q}</li>
-              ))}
-            </ul>
-          </div>
-        )}
-
         <div ref={bottomRef} />
       </div>
 

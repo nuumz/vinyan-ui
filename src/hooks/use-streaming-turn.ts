@@ -11,15 +11,9 @@
  */
 import { create } from 'zustand';
 import type { SSEEvent } from '@/lib/api-client';
+import type { PhaseName } from '@/lib/phases';
 
-export type PhaseName =
-  | 'perceive'
-  | 'comprehend'
-  | 'predict'
-  | 'plan'
-  | 'generate'
-  | 'verify'
-  | 'learn';
+export type { PhaseName };
 
 export interface PhaseTiming {
   phase: PhaseName;

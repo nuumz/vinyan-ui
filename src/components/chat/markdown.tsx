@@ -1,5 +1,5 @@
-import { useState, memo } from 'react';
-import type { ReactNode } from 'react';
+import { useState, memo, isValidElement } from 'react';
+import type { ReactNode, ReactElement } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
@@ -36,11 +36,27 @@ function CodeBlock({ className, children }: { className?: string; children?: Rea
       >
         {copied ? <Check size={12} className="text-green" /> : <Copy size={12} />}
       </button>
-      <pre className={cn('bg-bg border border-border rounded-md p-3 pt-6 overflow-auto text-xs')}>
+      <pre
+        className={cn(
+          'bg-bg border border-border rounded-md p-3 pt-6 overflow-auto text-xs whitespace-pre',
+        )}
+      >
         <code className={className}>{children}</code>
       </pre>
     </div>
   );
+}
+
+type CodeElementProps = { className?: string; children?: ReactNode };
+
+function extractCodeChild(children: ReactNode): ReactElement<CodeElementProps> | null {
+  if (isValidElement<CodeElementProps>(children)) return children;
+  if (Array.isArray(children)) {
+    for (const c of children) {
+      if (isValidElement<CodeElementProps>(c)) return c;
+    }
+  }
+  return null;
 }
 
 interface MarkdownProps {
@@ -60,21 +76,26 @@ export const Markdown = memo(function Markdown({ content, className }: MarkdownP
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeHighlight]}
         components={{
-          pre: ({ children }: { children?: ReactNode }) => <>{children}</>,
-          code: ({ className, children, ...rest }: { className?: string; children?: ReactNode }) => {
-            const isBlock = className?.startsWith('language-');
-            if (isBlock) {
-              return <CodeBlock className={className}>{children}</CodeBlock>;
+          pre: ({ children }: { children?: ReactNode }) => {
+            // react-markdown wraps every fenced code block in <pre><code>…</code></pre>.
+            // Delegate to CodeBlock so block code is rendered with a real <pre> even when
+            // the fence has no language specifier (``` ASCII art ``` is a common LLM output).
+            const codeChild = extractCodeChild(children);
+            if (codeChild) {
+              const { className, children: codeChildren } = codeChild.props;
+              return <CodeBlock className={className}>{codeChildren}</CodeBlock>;
             }
-            return (
-              <code
-                className="px-1 py-0.5 rounded bg-bg border border-border font-mono text-[0.85em]"
-                {...rest}
-              >
-                {children}
-              </code>
-            );
+            return <CodeBlock>{children}</CodeBlock>;
           },
+          code: ({ className, children, ...rest }: { className?: string; children?: ReactNode }) => (
+            // Only inline code reaches here — block code is handled by the pre component above.
+            <code
+              className="px-1 py-0.5 rounded bg-bg border border-border font-mono text-[0.85em]"
+              {...rest}
+            >
+              {children}
+            </code>
+          ),
           a: ({ children, ...rest }: { children?: ReactNode; href?: string }) => (
             <a
               {...rest}
