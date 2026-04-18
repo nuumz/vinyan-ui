@@ -38,6 +38,20 @@ export interface OracleVerdictEntry {
   at: number;
 }
 
+export interface EscalationEntry {
+  fromLevel: number;
+  toLevel: number;
+  reason: string;
+  at: number;
+}
+
+export interface CriticVerdictEntry {
+  accepted: boolean;
+  confidence: number;
+  reason?: string;
+  at: number;
+}
+
 export type StreamingStatus = 'idle' | 'running' | 'input-required' | 'done' | 'error';
 
 export interface StreamingTurn {
@@ -49,10 +63,25 @@ export interface StreamingTurn {
   phaseTimings: PhaseTiming[];
   toolCalls: ToolCall[];
   oracleVerdicts: OracleVerdictEntry[];
-  escalations: number;
+  /** Ordered escalation events (fromLevel → toLevel + reason). */
+  escalations: EscalationEntry[];
+  /** LLM-as-critic verdicts captured during verify phase. */
+  criticVerdicts: CriticVerdictEntry[];
   clarifications: string[];
   finalContent: string;
+  /** Streamed reasoning fragments (one per agent:thinking event). */
+  reasoning: string[];
   thinking?: string;
+  /** Cumulative tokens consumed across agent turns. */
+  tokensConsumed?: number;
+  /** Engine/worker id last selected for this task. */
+  engineId?: string;
+  /** Rationale for the engine selection, if surfaced by backend. */
+  engineReason?: string;
+  /** Current routing level (0=reflex, 1=heuristic, 2=analytical, 3=deliberative). */
+  routingLevel?: number;
+  /** Contract violations reported by the K1 enforcement layer. */
+  contractViolations?: { count: number; policy: string };
   error?: string;
 }
 
@@ -75,9 +104,11 @@ function emptyTurn(): StreamingTurn {
     phaseTimings: [],
     toolCalls: [],
     oracleVerdicts: [],
-    escalations: 0,
+    escalations: [],
+    criticVerdicts: [],
     clarifications: [],
     finalContent: '',
+    reasoning: [],
   };
 }
 
@@ -190,7 +221,47 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
       };
     }
     case 'task:escalate': {
-      return { ...turn, escalations: turn.escalations + 1 };
+      const fromLevel = typeof p.fromLevel === 'number' ? p.fromLevel : 0;
+      const toLevel = typeof p.toLevel === 'number' ? p.toLevel : fromLevel + 1;
+      const reason = typeof p.reason === 'string' ? p.reason : 'escalation';
+      return {
+        ...turn,
+        escalations: [...turn.escalations, { fromLevel, toLevel, reason, at: event.ts }],
+        routingLevel: toLevel,
+      };
+    }
+    case 'agent:thinking': {
+      const rationale = typeof p.rationale === 'string' ? p.rationale : '';
+      if (!rationale) return turn;
+      return { ...turn, reasoning: [...turn.reasoning, rationale] };
+    }
+    case 'agent:turn_complete': {
+      const tokens = typeof p.tokensConsumed === 'number' ? p.tokensConsumed : 0;
+      if (tokens <= 0) return turn;
+      return { ...turn, tokensConsumed: (turn.tokensConsumed ?? 0) + tokens };
+    }
+    case 'worker:selected': {
+      const workerId = typeof p.workerId === 'string' ? p.workerId : turn.engineId;
+      const reason = typeof p.reason === 'string' ? p.reason : turn.engineReason;
+      if (!workerId) return turn;
+      return { ...turn, engineId: workerId, engineReason: reason };
+    }
+    case 'critic:verdict': {
+      const accepted = p.accepted === true;
+      const confidence = typeof p.confidence === 'number' ? p.confidence : 0;
+      const reason = typeof p.reason === 'string' ? p.reason : undefined;
+      return {
+        ...turn,
+        criticVerdicts: [
+          ...turn.criticVerdicts,
+          { accepted, confidence, reason, at: event.ts },
+        ],
+      };
+    }
+    case 'agent:contract_violation': {
+      const count = typeof p.violations === 'number' ? p.violations : 1;
+      const policy = typeof p.policy === 'string' ? p.policy : 'policy';
+      return { ...turn, contractViolations: { count, policy } };
     }
     case 'agent:clarification_requested': {
       const questions =

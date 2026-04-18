@@ -1,9 +1,13 @@
-import { AlertTriangle, HelpCircle, RefreshCw } from 'lucide-react';
+import { AlertTriangle, HelpCircle, RefreshCw, ShieldAlert } from 'lucide-react';
 import type { StreamingTurn } from '@/hooks/use-streaming-turn';
-import { PhaseTimeline } from './phase-timeline';
-import { ToolCallCard } from './tool-call-card';
-import { OracleVerdictRow } from './oracle-verdict-row';
+import { CriticVerdictRow } from './critic-verdict-row';
+import { EscalationBadge } from './escalation-badge';
 import { Markdown } from './markdown';
+import { OracleVerdictRow } from './oracle-verdict-row';
+import { PhaseTimeline, WorkingStatusCard } from './phase-timeline';
+import { ReasoningBlock } from './reasoning-block';
+import { StatsRow } from './stats-row';
+import { ToolCallCard } from './tool-call-card';
 
 interface StreamingBubbleProps {
   turn: StreamingTurn;
@@ -23,40 +27,82 @@ function formatElapsed(ms: number) {
 export function StreamingBubble({ turn, nowMs, onRetry }: StreamingBubbleProps) {
   const elapsed = (turn.finishedAt ?? nowMs) - turn.startedAt;
   const isRunning = turn.status === 'running';
-  const hasActivity = turn.toolCalls.length > 0 || turn.oracleVerdicts.length > 0;
+  const activityCount =
+    turn.toolCalls.length + turn.oracleVerdicts.length + turn.criticVerdicts.length;
+  const hasActivity = activityCount > 0;
+  const hasReasoning = turn.reasoning.length > 0 || !!turn.thinking;
+  const isEmptyRunning = !turn.finalContent && isRunning && !hasActivity && !hasReasoning;
 
   return (
     <div className="flex justify-start">
-      <div className="max-w-[85%] w-full bg-surface border border-border rounded-lg px-4 py-3 text-sm space-y-2.5">
-        {/* Header: phase timeline + elapsed + escalation badge */}
-        <div className="flex items-center gap-3 flex-wrap">
-          <PhaseTimeline
+      <div className="max-w-[88%] w-full bg-surface border border-border rounded-lg px-4 py-3 text-sm space-y-2.5">
+        {/* Empty running: human-readable working status card */}
+        {isEmptyRunning ? (
+          <WorkingStatusCard
             timings={turn.phaseTimings}
             currentPhase={turn.currentPhase}
-            status={turn.status}
+            elapsed={formatElapsed(elapsed)}
           />
-          <span className="text-xs text-text-dim tabular-nums">{formatElapsed(elapsed)}</span>
-          {turn.escalations > 0 && (
-            <span className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-yellow/10 text-yellow border border-yellow/30">
-              <AlertTriangle size={10} /> escalate ×{turn.escalations}
-            </span>
-          )}
-        </div>
+        ) : (
+          <>
+            {/* Header: phase timeline + elapsed + stats + escalation + contract violations */}
+            <div className="flex items-center gap-3 flex-wrap">
+              <PhaseTimeline
+                timings={turn.phaseTimings}
+                currentPhase={turn.currentPhase}
+                status={turn.status}
+              />
+              <span className="text-xs text-text-dim tabular-nums">{formatElapsed(elapsed)}</span>
+              <div className="ml-auto flex items-center gap-2 flex-wrap">
+                <StatsRow
+                  tokensConsumed={turn.tokensConsumed}
+                  engineId={turn.engineId}
+                  routingLevel={turn.routingLevel}
+                />
+                <EscalationBadge events={turn.escalations} />
+                {turn.contractViolations && (
+                  <span
+                    title={`Contract policy: ${turn.contractViolations.policy}`}
+                    className="inline-flex items-center gap-1 text-[10px] h-5 px-1.5 rounded bg-red/10 text-red border border-red/30 font-mono"
+                  >
+                    <ShieldAlert size={10} />
+                    contract ×{turn.contractViolations.count}
+                  </span>
+                )}
+              </div>
+            </div>
+          </>
+        )}
 
-        {/* Activity: tool calls + oracle verdicts (collapsible) */}
+        {/* Reasoning */}
+        {hasReasoning && (
+          <ReasoningBlock
+            fragments={turn.reasoning}
+            finalThinking={turn.thinking}
+            isRunning={isRunning}
+          />
+        )}
+
+        {/* Activity: tool calls + oracle + critic verdicts (collapsible) */}
         {hasActivity && (
           <details open className="group">
-            <summary className="cursor-pointer text-xs text-text-dim hover:text-text list-none flex items-center gap-1">
+            <summary className="cursor-pointer text-xs text-text-dim hover:text-text list-none flex items-center gap-1 select-none">
               <span className="group-open:rotate-90 inline-block transition-transform">▸</span>
               Activity · {turn.toolCalls.length} tool{turn.toolCalls.length === 1 ? '' : 's'}
-              {turn.oracleVerdicts.length > 0 && ` · ${turn.oracleVerdicts.length} verdict${turn.oracleVerdicts.length === 1 ? '' : 's'}`}
+              {turn.oracleVerdicts.length > 0 &&
+                ` · ${turn.oracleVerdicts.length} oracle${turn.oracleVerdicts.length === 1 ? '' : 's'}`}
+              {turn.criticVerdicts.length > 0 &&
+                ` · ${turn.criticVerdicts.length} critic${turn.criticVerdicts.length === 1 ? '' : 's'}`}
             </summary>
             <div className="mt-1.5 space-y-1">
               {turn.toolCalls.map((t) => (
                 <ToolCallCard key={t.id} tool={t} />
               ))}
               {turn.oracleVerdicts.map((v, i) => (
-                <OracleVerdictRow key={`${v.oracle}-${i}`} entry={v} />
+                <OracleVerdictRow key={`oracle-${v.oracle}-${i}`} entry={v} />
+              ))}
+              {turn.criticVerdicts.map((v, i) => (
+                <CriticVerdictRow key={`critic-${i}`} entry={v} />
               ))}
             </div>
           </details>
@@ -103,11 +149,6 @@ export function StreamingBubble({ turn, nowMs, onRetry }: StreamingBubbleProps) 
               <span className="inline-block w-1.5 h-3.5 bg-accent ml-0.5 align-middle animate-pulse" />
             )}
           </div>
-        )}
-
-        {/* Empty state while generating but no text yet */}
-        {!turn.finalContent && isRunning && !hasActivity && (
-          <div className="text-xs text-text-dim italic">Working on it…</div>
         )}
       </div>
     </div>
