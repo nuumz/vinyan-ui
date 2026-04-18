@@ -1,37 +1,21 @@
 /**
- * Tool invocation card — Copilot Chat-style.
+ * Tool invocation card — Claude Code-style.
  *
- * Row 1 (collapsed): status icon · tool name · arg preview · duration · chevron
- * Row 2 (expanded): file chips (if any) · args JSON · result JSON · error
+ * Header (always visible):
+ *   [chevron] [BADGE] primary-preview               duration  status-icon
+ * Sub-line: inline result preview (first 1-3 lines, no expand needed)
+ * Expanded: file chips + full args JSON + full result JSON / error
  */
 import { useState } from 'react';
-import { CheckCircle2, ChevronRight, Loader2, Wrench, XCircle } from 'lucide-react';
+import { CheckCircle2, ChevronRight, Loader2, XCircle } from 'lucide-react';
 import type { ToolCall } from '@/hooks/use-streaming-turn';
 import { extractFilePaths } from '@/lib/parse-tool-args';
+import { toolPrimaryPreview } from '@/lib/summarize-tools';
 import { cn } from '@/lib/utils';
 import { JsonView } from '../ui/json-view';
 import { FileChip } from './file-chip';
-
-function summarizeArgs(args: unknown): string {
-  if (args == null) return '';
-  if (typeof args === 'string') return args.length > 120 ? `${args.slice(0, 120)}…` : args;
-  if (typeof args === 'object' && !Array.isArray(args)) {
-    const rec = args as Record<string, unknown>;
-    const preferredKey = ['query', 'pattern', 'path', 'file', 'filePath', 'command', 'url'].find(
-      (k) => typeof rec[k] === 'string',
-    );
-    if (preferredKey) {
-      const v = rec[preferredKey] as string;
-      return `${preferredKey}: ${v.length > 100 ? `${v.slice(0, 100)}…` : v}`;
-    }
-  }
-  try {
-    const s = JSON.stringify(args);
-    return s.length > 120 ? `${s.slice(0, 117)}…` : s;
-  } catch {
-    return String(args);
-  }
-}
+import { ResultPreview } from './result-preview';
+import { ToolBadge } from './tool-badge';
 
 function statusBorderClass(status: ToolCall['status']): string {
   switch (status) {
@@ -42,6 +26,10 @@ function statusBorderClass(status: ToolCall['status']): string {
     default:
       return 'border-border';
   }
+}
+
+function clampLine(s: string, max = 110): string {
+  return s.length > max ? `${s.slice(0, max)}…` : s;
 }
 
 export function ToolCallCard({ tool }: { tool: ToolCall }) {
@@ -56,6 +44,7 @@ export function ToolCallCard({ tool }: { tool: ToolCall }) {
         : 'text-text-dim';
 
   const filePaths = extractFilePaths(tool.args);
+  const primary = toolPrimaryPreview(tool.name, tool.args);
   const argsIsObject =
     tool.args != null && typeof tool.args === 'object' && !Array.isArray(tool.args);
   const resultIsObject =
@@ -77,9 +66,10 @@ export function ToolCallCard({ tool }: { tool: ToolCall }) {
           size={12}
           className={cn('text-text-dim transition-transform shrink-0', open && 'rotate-90')}
         />
-        <Wrench size={11} className="text-purple shrink-0" />
-        <span className="font-mono text-text shrink-0">{tool.name}</span>
-        <span className="text-text-dim truncate flex-1">{summarizeArgs(tool.args)}</span>
+        <ToolBadge name={tool.name} />
+        <span className="text-text font-mono truncate flex-1 min-w-0">
+          {primary || <span className="text-text-dim italic">no args</span>}
+        </span>
         {tool.durationMs != null && (
           <span className="text-text-dim shrink-0 tabular-nums text-[10px]">
             {tool.durationMs}ms
@@ -90,6 +80,8 @@ export function ToolCallCard({ tool }: { tool: ToolCall }) {
           className={cn(statusTone, 'shrink-0', tool.status === 'running' && 'animate-spin')}
         />
       </button>
+
+      {!open && <ResultPreview tool={tool} />}
 
       {open && (
         <div className="px-3 pb-2.5 pt-1.5 text-xs space-y-2 border-t border-border/50">
@@ -112,7 +104,9 @@ export function ToolCallCard({ tool }: { tool: ToolCall }) {
                 />
               ) : (
                 <pre className="p-2 bg-bg rounded overflow-auto max-h-48 text-[11px] whitespace-pre-wrap font-mono">
-                  {typeof tool.args === 'string' ? tool.args : JSON.stringify(tool.args, null, 2)}
+                  {typeof tool.args === 'string'
+                    ? clampLine(tool.args, 4000)
+                    : JSON.stringify(tool.args, null, 2)}
                 </pre>
               )}
             </section>

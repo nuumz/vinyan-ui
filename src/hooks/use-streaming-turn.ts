@@ -82,7 +82,15 @@ export interface StreamingTurn {
   routingLevel?: number;
   /** Contract violations reported by the K1 enforcement layer. */
   contractViolations?: { count: number; policy: string };
+  /** Plan/DAG snapshot from `agent:plan_update`. Drives the session setup card. */
+  planSteps: PlanStep[];
   error?: string;
+}
+
+export interface PlanStep {
+  id: string;
+  label: string;
+  status: 'pending' | 'running' | 'done' | 'skipped' | 'failed';
 }
 
 interface StreamingTurnState {
@@ -109,6 +117,7 @@ function emptyTurn(): StreamingTurn {
     clarifications: [],
     finalContent: '',
     reasoning: [],
+    planSteps: [],
   };
 }
 
@@ -262,6 +271,25 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
       const count = typeof p.violations === 'number' ? p.violations : 1;
       const policy = typeof p.policy === 'string' ? p.policy : 'policy';
       return { ...turn, contractViolations: { count, policy } };
+    }
+    case 'agent:plan_update': {
+      const raw = Array.isArray(p.steps) ? (p.steps as unknown[]) : [];
+      const steps: PlanStep[] = [];
+      for (const s of raw) {
+        if (!s || typeof s !== 'object') continue;
+        const o = s as Record<string, unknown>;
+        const id = typeof o.id === 'string' ? o.id : undefined;
+        const label = typeof o.label === 'string' ? o.label : undefined;
+        const status = o.status as PlanStep['status'] | undefined;
+        if (!id || !label) continue;
+        steps.push({
+          id,
+          label,
+          status: status ?? 'pending',
+        });
+      }
+      if (steps.length === 0) return turn;
+      return { ...turn, planSteps: steps };
     }
     case 'agent:clarification_requested': {
       const questions =

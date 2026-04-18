@@ -4,7 +4,7 @@ import { useApprovals, useResolveApproval } from '@/hooks/use-approvals';
 import { StatusBadge } from '@/components/ui/badge';
 import { PageHeader } from '@/components/ui/page-header';
 import { toast } from '@/store/toast-store';
-import { RefreshCw, ShieldAlert } from 'lucide-react';
+import { ChevronDown, ChevronRight, ExternalLink, MessageSquare, RefreshCw, ShieldAlert } from 'lucide-react';
 
 export default function Tasks() {
   const tasksQuery = useTasks();
@@ -138,91 +138,136 @@ export default function Tasks() {
         {tasks.length === 0 ? (
           <div className="text-sm text-text-dim text-center py-8">No tasks yet — submit one above</div>
         ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border text-left text-text-dim text-xs">
-                <th className="px-4 py-2">Task ID</th>
-                <th className="px-4 py-2">Status</th>
-                <th className="px-4 py-2">Details</th>
-                <th className="px-4 py-2 w-20"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {tasks.map((t) => (
-                <tr key={t.taskId} className="border-b border-border/50 hover:bg-white/[0.02] group">
-                  <td className="px-4 py-2">
-                    <button
-                      type="button"
-                      className="font-mono text-xs text-accent hover:underline"
-                      onClick={() => setExpanded(expanded === t.taskId ? null : t.taskId)}
-                    >
-                      {t.taskId}
-                    </button>
-                  </td>
-                  <td className="px-4 py-2">
-                    <StatusBadge status={t.status} />
-                  </td>
-                  <td className="px-4 py-2 text-xs text-text-dim max-w-sm truncate">
-                    {t.result?.answer ?? t.result?.escalationReason ?? (t.status === 'running' ? 'In progress...' : '-')}
-                  </td>
-                  <td className="px-4 py-2 text-right">
-                    {t.status === 'running' && (
-                      <button
-                        type="button"
-                        className="px-2 py-0.5 text-xs rounded bg-red/20 text-red border border-red/30 hover:bg-red/30 transition-colors opacity-0 group-hover:opacity-100"
-                        onClick={() => {
-                          cancelTask.mutate(t.taskId);
-                          toast.info('Task cancelled');
-                        }}
-                      >
-                        Cancel
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-              {/* Expanded detail row */}
-              {expanded &&
-                tasks
-                  .filter((t) => t.taskId === expanded && t.result)
-                  .map((t) => (
-                    <tr key={`${t.taskId}-detail`}>
-                      <td colSpan={4} className="px-4 py-3 bg-bg/50">
-                        <div className="space-y-2 text-xs">
-                          {t.result?.answer && (
-                            <div>
-                              <span className="text-text-dim">Answer: </span>
-                              <span className="text-text">{t.result.answer}</span>
-                            </div>
-                          )}
-                          {t.result?.trace && (
-                            <div className="grid grid-cols-4 gap-2 text-text-dim">
-                              <div>
-                                Route: <span className="text-text">L{t.result.trace.routingLevel}</span>
-                              </div>
-                              <div>
-                                Tokens: <span className="text-text tabular-nums">{t.result.trace.tokensConsumed}</span>
-                              </div>
-                              <div>
-                                Duration: <span className="text-text tabular-nums">{t.result.trace.durationMs}ms</span>
-                              </div>
-                              <div>
-                                Model: <span className="text-text">{t.result.trace.modelUsed ?? '-'}</span>
-                              </div>
-                            </div>
-                          )}
-                          {t.result?.qualityScore && (
-                            <div className="text-text-dim">
-                              Quality: <span className="text-text tabular-nums">{t.result.qualityScore.composite.toFixed(2)}</span>
-                              <span className="ml-2">({t.result.qualityScore.dimensionsAvailable}D {t.result.qualityScore.phase})</span>
-                            </div>
+          <div className="divide-y divide-border/50">
+            {tasks.map((t) => {
+              const isExpanded = expanded === t.taskId;
+              const summary = t.goal || t.result?.answer || t.result?.escalationReason;
+              const answer = t.result?.answer;
+              const hasDetail = !!(t.result?.trace || t.result?.qualityScore || answer);
+
+              return (
+                <div key={t.taskId} className="group">
+                  {/* Main row */}
+                  <div
+                    className="flex items-start gap-3 px-4 py-3 hover:bg-white/2 cursor-pointer"
+                    onClick={() => setExpanded(isExpanded ? null : t.taskId)}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => e.key === 'Enter' && setExpanded(isExpanded ? null : t.taskId)}
+                  >
+                    {/* Expand icon */}
+                    <span className="mt-0.5 text-text-dim shrink-0">
+                      {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                    </span>
+
+                    {/* Content */}
+                    <div className="flex-1 min-w-0 space-y-1">
+                      {/* Goal / summary */}
+                      <div className="text-sm text-text">
+                        {summary
+                          ? <span className="line-clamp-2">{summary}</span>
+                          : <span className="text-text-dim italic">{t.status === 'running' ? 'In progress…' : 'No description'}</span>
+                        }
+                      </div>
+
+                      {/* Meta row */}
+                      <div className="flex items-center gap-3 text-[10px] text-text-dim font-mono tabular-nums">
+                        <span className="truncate max-w-[18ch]" title={t.taskId}>{t.taskId.slice(0, 8)}</span>
+                        {t.result?.trace && (
+                          <>
+                            <span>L{t.result.trace.routingLevel}</span>
+                            {t.result.trace.tokensConsumed > 0 && (
+                              <span>{t.result.trace.tokensConsumed.toLocaleString()} tok</span>
+                            )}
+                            {t.result.trace.durationMs > 0 && (
+                              <span>{t.result.trace.durationMs}ms</span>
+                            )}
+                            {t.result.trace.modelUsed && t.result.trace.modelUsed !== 'none' && (
+                              <span>{t.result.trace.modelUsed}</span>
+                            )}
+                          </>
+                        )}
+                        {t.sessionId && (
+                          <a
+                            href={`/sessions/${t.sessionId}`}
+                            className="inline-flex items-center gap-0.5 text-accent hover:underline"
+                            onClick={(e) => e.stopPropagation()}
+                            title="Open session"
+                          >
+                            <MessageSquare size={9} /> Chat
+                          </a>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Status + actions */}
+                    <div className="flex items-center gap-2 shrink-0">
+                      <StatusBadge status={t.status} />
+                      {t.status === 'running' && (
+                        <button
+                          type="button"
+                          className="px-2 py-0.5 text-xs rounded bg-red/20 text-red border border-red/30 hover:bg-red/30 transition-colors opacity-0 group-hover:opacity-100"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            cancelTask.mutate(t.taskId);
+                            toast.info('Task cancelled');
+                          }}
+                        >
+                          Cancel
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Expanded detail */}
+                  {isExpanded && hasDetail && (
+                    <div className="px-4 pb-3 pl-11 space-y-2">
+                      {/* Answer */}
+                      {answer && (
+                        <div className="bg-bg/50 rounded-md p-3 text-sm text-text whitespace-pre-wrap border border-border/50">
+                          {answer}
+                        </div>
+                      )}
+
+                      {/* Trace details */}
+                      {t.result?.trace && (
+                        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-text-dim">
+                          <span>Route: <span className="text-text">L{t.result.trace.routingLevel}</span></span>
+                          <span>Tokens: <span className="text-text tabular-nums">{t.result.trace.tokensConsumed.toLocaleString()}</span></span>
+                          <span>Duration: <span className="text-text tabular-nums">{t.result.trace.durationMs}ms</span></span>
+                          <span>Model: <span className="text-text">{t.result.trace.modelUsed ?? '-'}</span></span>
+                          {t.result.trace.approach && (
+                            <span>Approach: <span className="text-text">{t.result.trace.approach}</span></span>
                           )}
                         </div>
-                      </td>
-                    </tr>
-                  ))}
-            </tbody>
-          </table>
+                      )}
+
+                      {/* Quality score */}
+                      {t.result?.qualityScore && (
+                        <div className="text-xs text-text-dim">
+                          Quality: <span className="text-text tabular-nums">{t.result.qualityScore.composite.toFixed(2)}</span>
+                          <span className="ml-2">({t.result.qualityScore.dimensionsAvailable}D {t.result.qualityScore.phase})</span>
+                        </div>
+                      )}
+
+                      {/* Full task ID */}
+                      <div className="text-[10px] text-text-dim font-mono flex items-center gap-2">
+                        <span>ID: {t.taskId}</span>
+                        {t.sessionId && (
+                          <a
+                            href={`/sessions/${t.sessionId}`}
+                            className="inline-flex items-center gap-0.5 text-accent hover:underline"
+                          >
+                            <ExternalLink size={9} /> Open in Chat
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         )}
       </div>
     </div>

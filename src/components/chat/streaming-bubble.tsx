@@ -6,8 +6,10 @@ import { Markdown } from './markdown';
 import { OracleVerdictRow } from './oracle-verdict-row';
 import { PhaseTimeline, WorkingStatusCard } from './phase-timeline';
 import { ReasoningBlock } from './reasoning-block';
+import { SessionSetupCard } from './session-setup-card';
 import { StatsRow } from './stats-row';
 import { ToolCallCard } from './tool-call-card';
+import { summarizeToolCalls } from '@/lib/summarize-tools';
 
 interface StreamingBubbleProps {
   turn: StreamingTurn;
@@ -83,16 +85,30 @@ export function StreamingBubble({ turn, nowMs, onRetry }: StreamingBubbleProps) 
           />
         )}
 
+        {/* Session setup card (Claude Code style) */}
+        <SessionSetupCard turn={turn} />
+
         {/* Activity: tool calls + oracle + critic verdicts (collapsible) */}
         {hasActivity && (
           <details open className="group">
             <summary className="cursor-pointer text-xs text-text-dim hover:text-text list-none flex items-center gap-1 select-none">
               <span className="group-open:rotate-90 inline-block transition-transform">▸</span>
-              Activity · {turn.toolCalls.length} tool{turn.toolCalls.length === 1 ? '' : 's'}
-              {turn.oracleVerdicts.length > 0 &&
-                ` · ${turn.oracleVerdicts.length} oracle${turn.oracleVerdicts.length === 1 ? '' : 's'}`}
-              {turn.criticVerdicts.length > 0 &&
-                ` · ${turn.criticVerdicts.length} critic${turn.criticVerdicts.length === 1 ? '' : 's'}`}
+              {(() => {
+                const toolPhrase = summarizeToolCalls(turn.toolCalls);
+                const extras: string[] = [];
+                if (turn.oracleVerdicts.length > 0) {
+                  extras.push(
+                    `${turn.oracleVerdicts.length} oracle verdict${turn.oracleVerdicts.length === 1 ? '' : 's'}`,
+                  );
+                }
+                if (turn.criticVerdicts.length > 0) {
+                  extras.push(
+                    `${turn.criticVerdicts.length} critic verdict${turn.criticVerdicts.length === 1 ? '' : 's'}`,
+                  );
+                }
+                const segments = [toolPhrase, ...extras].filter(Boolean) as string[];
+                return segments.length > 0 ? segments.join(', ') : 'Activity';
+              })()}
             </summary>
             <div className="mt-1.5 space-y-1">
               {turn.toolCalls.map((t) => (

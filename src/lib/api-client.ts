@@ -37,6 +37,8 @@ export interface SystemMetrics {
 export interface Task {
   taskId: string;
   status: string;
+  sessionId?: string;
+  goal?: string;
   result?: TaskResult;
 }
 
