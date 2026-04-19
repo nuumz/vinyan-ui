@@ -11,7 +11,7 @@
  */
 import { create } from 'zustand';
 import type { SSEEvent } from '@/lib/api-client';
-import type { PhaseName } from '@/lib/phases';
+import { PHASE_ORDER, type PhaseName } from '@/lib/phases';
 
 export type { PhaseName };
 
@@ -148,16 +148,31 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
   switch (event.event) {
     case 'task:start': {
       const input = (p.input as Record<string, unknown> | undefined) ?? {};
+      const routing = (p.routing as Record<string, unknown> | undefined) ?? {};
       const id = (input.id as string) ?? turn.taskId;
-      return { ...turn, taskId: id, startedAt: event.ts || turn.startedAt };
+      const level = typeof routing.level === 'number' ? (routing.level as number) : undefined;
+      const model = typeof routing.model === 'string' ? (routing.model as string) : undefined;
+      return {
+        ...turn,
+        taskId: id,
+        startedAt: event.ts || turn.startedAt,
+        routingLevel: level ?? turn.routingLevel,
+        engineId: turn.engineId ?? model,
+      };
     }
     case 'phase:timing': {
       const phase = p.phase as PhaseName | undefined;
       const durationMs = (p.durationMs as number) ?? 0;
       if (!phase) return turn;
+      // `phase:timing` fires AFTER a phase completes. Advance `currentPhase`
+      // to the next phase in PHASE_ORDER so the header reflects what is
+      // actually running now, not what just finished. Fall back to the
+      // completed phase if it is unknown or the final phase.
+      const idx = PHASE_ORDER.indexOf(phase);
+      const nextPhase = idx >= 0 && idx < PHASE_ORDER.length - 1 ? PHASE_ORDER[idx + 1] : phase;
       return {
         ...turn,
-        currentPhase: phase,
+        currentPhase: nextPhase,
         phaseTimings: [...turn.phaseTimings, { phase, durationMs, at: event.ts }],
       };
     }

@@ -61,7 +61,10 @@ function StepRow({ step }: { step: PlanStep }) {
 }
 
 export function SessionSetupCard({ turn }: { turn: StreamingTurn }) {
-  const hasPlan = turn.planSteps.length > 0;
+  // A one-step plan is almost always a fallback DAG that just echoes the
+  // user's request — useless as a checklist. Show the plan only when the
+  // decomposer produced real substeps.
+  const hasPlan = turn.planSteps.length >= 2;
   const hasMeta = !!turn.engineId || turn.routingLevel != null;
   if (!hasPlan && !hasMeta) return null;
 
