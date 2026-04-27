@@ -35,6 +35,7 @@ export function useSendMessage(sessionId: string | null) {
   const startTurn = useStreamingTurnStore((s) => s.start);
   const ingestTurn = useStreamingTurnStore((s) => s.ingest);
   const clearTurn = useStreamingTurnStore((s) => s.clear);
+  const setTurnError = useStreamingTurnStore((s) => s.setError);
 
   return useMutation<TaskResult, Error, string, SendContext>({
     mutationFn: async (content) => {
@@ -83,6 +84,17 @@ export function useSendMessage(sessionId: string | null) {
       }
       if (sessionId) {
         qc.invalidateQueries({ queryKey: qk.sessionMessages(sessionId) });
+        // Flip the turn from `running` → `error` so (a) the input unlocks
+        // (its `sending` guard keys off `turn.status === 'running'`) and
+        // (b) the delayed clear below can actually fire (the store's clear
+        // is a no-op while status is running, to guard against a stale
+        // timeout wiping a freshly-started turn). Without this the bubble
+        // would stay stuck in `running` forever on any fetch-level failure
+        // that never produced an SSE `task:complete`.
+        const sid = sessionId;
+        const reason = err instanceof Error ? err.message : 'Send failed';
+        setTurnError(sid, reason);
+        setTimeout(() => clearTurn(sid), 400);
       }
       toast.error(err instanceof Error ? err.message : 'Failed to send message');
     },

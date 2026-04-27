@@ -102,6 +102,13 @@ interface StreamingTurnState {
   ingest: (sessionId: string, event: SSEEvent) => void;
   /** Called when the send mutation ends (success or error) — clears the bubble. */
   clear: (sessionId: string) => void;
+  /**
+   * Called from the mutation's onError when the fetch failed before any
+   * SSE event that would have set a terminal status could arrive. Leaving
+   * the turn as `running` would keep the send button disabled forever and
+   * also make the guarded `clear` below a no-op.
+   */
+  setError: (sessionId: string, reason: string) => void;
 }
 
 function emptyTurn(): StreamingTurn {
@@ -129,6 +136,12 @@ export const useStreamingTurnStore = create<StreamingTurnState>((set) => ({
     })),
   clear: (sessionId) =>
     set((s) => {
+      // Defense against a stale setTimeout(clear, 400) from a previously
+      // completed send racing with a freshly-started turn: if a new send
+      // has started (status === 'running'), leave its bubble alone. Clears
+      // only happen against terminal turns (done/error/input-required).
+      const prev = s.bySession[sessionId];
+      if (prev?.status === 'running') return s;
       const { [sessionId]: _drop, ...rest } = s.bySession;
       return { bySession: rest };
     }),
@@ -139,6 +152,23 @@ export const useStreamingTurnStore = create<StreamingTurnState>((set) => ({
       const next = reduceTurn(prev, event);
       if (next === prev) return s;
       return { bySession: { ...s.bySession, [sessionId]: next } };
+    }),
+  setError: (sessionId, reason) =>
+    set((s) => {
+      const prev = s.bySession[sessionId];
+      if (!prev) return s;
+      if (prev.status === 'done' || prev.status === 'error') return s;
+      return {
+        bySession: {
+          ...s.bySession,
+          [sessionId]: {
+            ...prev,
+            status: 'error',
+            finishedAt: Date.now(),
+            error: reason || prev.error,
+          },
+        },
+      };
     }),
 }));
 

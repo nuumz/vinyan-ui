@@ -17,7 +17,11 @@ export default function SessionChat() {
 
   const messages = messagesQuery.data?.messages ?? [];
   const pendingClarifications = messagesQuery.data?.session?.pendingClarifications ?? [];
-  const sending = sendMessage.isPending;
+  // Treat the input as busy whenever a turn is still running — even if this
+  // is a fresh mount of the page after navigating back (the mutation hook
+  // state is gone, but the turn in the zustand store tells us the previous
+  // task is still streaming).
+  const sending = sendMessage.isPending || turn?.status === 'running';
 
   const [input, setInput] = useState('');
   const [lastSent, setLastSent] = useState('');
@@ -33,6 +37,10 @@ export default function SessionChat() {
   }, [turn?.status]);
 
   // Clear any stale streaming bubble when switching sessions / unmounting.
+  // `clearTurn` is a no-op in the store if the turn is still `running`, so
+  // navigating away mid-task preserves progress — otherwise the `ingest`
+  // reducer's `if (!prev) return s` guard would silently drop every
+  // subsequent SSE event from the still-open fetch.
   useEffect(() => {
     return () => {
       if (sessionId) clearTurn(sessionId);
