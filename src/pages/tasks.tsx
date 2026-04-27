@@ -6,6 +6,26 @@ import { PageHeader } from '@/components/ui/page-header';
 import { toast } from '@/store/toast-store';
 import { ChevronDown, ChevronRight, ExternalLink, MessageSquare, RefreshCw, ShieldAlert } from 'lucide-react';
 
+const DEFAULT_TASK_BUDGET = { maxTokens: 50_000, maxDurationMs: 180_000, maxRetries: 3 } as const;
+const TIMEOUT_RETRY_BUDGET = { maxTokens: 50_000, maxDurationMs: 240_000, maxRetries: 3 } as const;
+
+function formatDuration(ms?: number): string {
+  if (ms == null || ms <= 0) return '—';
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const min = Math.floor(ms / 60_000);
+  const sec = Math.round((ms % 60_000) / 1000);
+  return sec > 0 ? `${min}m ${sec}s` : `${min}m`;
+}
+
+function isTimeoutTask(t: { result?: { trace?: { outcome?: string; approach?: string }; answer?: string } }): boolean {
+  return (
+    t.result?.trace?.outcome === 'timeout' ||
+    t.result?.trace?.approach === 'wall-clock-timeout' ||
+    t.result?.answer?.startsWith('Task timed out after') === true
+  );
+}
+
 export default function Tasks() {
   const tasksQuery = useTasks();
   const tasks = tasksQuery.data ?? [];
@@ -26,7 +46,7 @@ export default function Tasks() {
       await submitTask.mutateAsync({
         goal,
         taskType,
-        budget: { maxTokens: 50000, maxDurationMs: 60000, maxRetries: 3 },
+        budget: DEFAULT_TASK_BUDGET,
       });
       setGoal('');
       setShowForm(false);
@@ -37,6 +57,22 @@ export default function Tasks() {
   };
 
   const isRefetching = tasksQuery.isFetching;
+
+  const handleRetryTimeout = async (task: (typeof tasks)[number]) => {
+    const retryGoal = task.goal || task.result?.answer;
+    if (!retryGoal?.trim()) return;
+    try {
+      await submitTask.mutateAsync({
+        goal: retryGoal,
+        taskType: task.result?.trace?.affectedFiles?.length ? 'code' : 'reasoning',
+        targetFiles: task.result?.trace?.affectedFiles,
+        budget: TIMEOUT_RETRY_BUDGET,
+      });
+      toast.success('Retry submitted with a 4m budget');
+    } catch {
+      // toast already surfaced by mutation onError
+    }
+  };
 
   return (
     <div className="space-y-4">
@@ -180,7 +216,7 @@ export default function Tasks() {
                               <span>{t.result.trace.tokensConsumed.toLocaleString()} tok</span>
                             )}
                             {t.result.trace.durationMs > 0 && (
-                              <span>{t.result.trace.durationMs}ms</span>
+                              <span>{formatDuration(t.result.trace.durationMs)}</span>
                             )}
                             {t.result.trace.modelUsed && t.result.trace.modelUsed !== 'none' && (
                               <span>{t.result.trace.modelUsed}</span>
@@ -226,6 +262,21 @@ export default function Tasks() {
                       {answer && (
                         <div className="bg-bg/50 rounded-md p-3 text-sm text-text whitespace-pre-wrap border border-border/50">
                           {answer}
+                          {isTimeoutTask(t) && (
+                            <div className="mt-3 flex items-center justify-between gap-3 border-t border-border/40 pt-2 text-xs">
+                              <span className="text-text-dim">
+                                This task exceeded its time budget. Retry with a longer budget to let the workflow finish.
+                              </span>
+                              <button
+                                type="button"
+                                className="shrink-0 rounded px-2 py-1 bg-accent/15 text-accent hover:bg-accent/25 transition-colors disabled:opacity-50"
+                                onClick={() => handleRetryTimeout(t)}
+                                disabled={submitTask.isPending}
+                              >
+                                Retry 4m
+                              </button>
+                            </div>
+                          )}
                         </div>
                       )}
 
@@ -234,7 +285,7 @@ export default function Tasks() {
                         <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-text-dim">
                           <span>Route: <span className="text-text">L{t.result.trace.routingLevel}</span></span>
                           <span>Tokens: <span className="text-text tabular-nums">{t.result.trace.tokensConsumed.toLocaleString()}</span></span>
-                          <span>Duration: <span className="text-text tabular-nums">{t.result.trace.durationMs}ms</span></span>
+                          <span>Duration: <span className="text-text tabular-nums">{formatDuration(t.result.trace.durationMs)}</span></span>
                           <span>Model: <span className="text-text">{t.result.trace.modelUsed ?? '-'}</span></span>
                           {t.result.trace.approach && (
                             <span>Approach: <span className="text-text">{t.result.trace.approach}</span></span>

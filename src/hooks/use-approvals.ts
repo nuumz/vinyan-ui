@@ -21,7 +21,42 @@ export function useResolveApproval() {
       qc.invalidateQueries({ queryKey: qk.tasks });
     },
     onError: (err) => {
-      toast.error(err instanceof Error ? err.message : 'Failed to resolve approval');
+      toast.apiError(err, { fallback: 'Failed to resolve approval' });
+    },
+  });
+}
+
+/**
+ * Workflow approval gate (Phase E). Distinct from `useResolveApproval`
+ * which targets the per-task A6 gate — this resolves the workflow-level
+ * plan_ready prompt that pauses long-form goals before any step runs.
+ *
+ * Backend emits `workflow:plan_approved` / `workflow:plan_rejected` on the
+ * bus when these complete; the streaming reducer picks up the event and
+ * tears down the inline approval card. We don't manually invalidate any
+ * queries here — the SSE event drives all state.
+ */
+interface WorkflowApprovalArgs {
+  sessionId: string;
+  taskId: string;
+  decision: 'approved' | 'rejected';
+  reason?: string;
+}
+
+interface WorkflowApprovalResult {
+  taskId: string;
+  sessionId: string;
+  status: 'approved' | 'rejected';
+}
+
+export function useResolveWorkflowApproval() {
+  return useMutation<WorkflowApprovalResult, Error, WorkflowApprovalArgs>({
+    mutationFn: (args) =>
+      args.decision === 'approved'
+        ? api.approveWorkflow(args.sessionId, args.taskId)
+        : api.rejectWorkflow(args.sessionId, args.taskId, args.reason),
+    onError: (err) => {
+      toast.apiError(err, { fallback: 'Failed to resolve workflow approval' });
     },
   });
 }

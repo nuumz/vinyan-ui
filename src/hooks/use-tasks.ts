@@ -22,7 +22,7 @@ export function useSubmitTask() {
       qc.invalidateQueries({ queryKey: qk.tasks });
     },
     onError: (err) => {
-      toast.error(err instanceof Error ? err.message : 'Failed to submit task');
+      toast.apiError(err, { fallback: 'Failed to submit task' });
     },
   });
 }
@@ -33,7 +33,7 @@ export function useCancelTask() {
     mutationFn: (taskId: string) => api.cancelTask(taskId),
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.tasks }),
     onError: (err) => {
-      toast.error(err instanceof Error ? err.message : 'Failed to cancel task');
+      toast.apiError(err, { fallback: 'Failed to cancel task' });
     },
   });
 }

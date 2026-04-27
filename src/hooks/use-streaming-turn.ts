@@ -29,6 +29,14 @@ export interface ToolCall {
   result?: unknown;
   durationMs?: number;
   at: number;
+  /**
+   * Plan step that was running when this tool started, if any. The reducer
+   * fills this from `turn.planSteps.find(s => s.status === 'running')?.id`
+   * at the moment the tool fires — heuristic but correct for sequential
+   * workflows. `undefined` for ad-hoc / non-workflow turns; the UI groups
+   * unattributed tools under an implicit "Working" step.
+   */
+  planStepId?: string;
 }
 
 export interface OracleVerdictEntry {
@@ -52,12 +60,70 @@ export interface CriticVerdictEntry {
   at: number;
 }
 
-export type StreamingStatus = 'idle' | 'running' | 'input-required' | 'done' | 'error';
+/**
+ * One entry in the chronological "process timeline" surfaced under the
+ * streaming bubble. Each entry corresponds to a single bus event that
+ * represents an orchestrator decision the user benefits from seeing
+ * (skill match, agent routing/synthesis, capability research). Labels are
+ * derived from typed payload fields — NEVER from regex over LLM output
+ * (no-llm-output-postfilter rule).
+ */
+export type ProcessLogKind =
+  | 'skill_match'
+  | 'skill_miss'
+  | 'agent_routed'
+  | 'agent_synthesized'
+  | 'agent_synthesis_failed'
+  | 'capability_research'
+  | 'capability_research_failed';
+
+export interface ProcessLogEntry {
+  id: string;
+  kind: ProcessLogKind;
+  label: string;
+  detail?: string;
+  status: 'info' | 'success' | 'warn' | 'error';
+  at: number;
+}
+
+/** FIFO cap to keep `processLog` bounded on long agentic loops. */
+const PROCESS_LOG_MAX = 50;
+
+function appendProcessLog(turn: StreamingTurn, entry: ProcessLogEntry): StreamingTurn {
+  const next = [...turn.processLog, entry];
+  return {
+    ...turn,
+    processLog: next.length > PROCESS_LOG_MAX ? next.slice(next.length - PROCESS_LOG_MAX) : next,
+  };
+}
+
+export type StreamingStatus =
+  | 'idle'
+  | 'running'
+  | 'input-required'
+  | 'awaiting-approval'
+  | 'done'
+  | 'error';
+
+export interface PendingApproval {
+  taskId: string;
+  goal: string;
+  steps: Array<{
+    id: string;
+    description: string;
+    strategy: string;
+    dependencies: string[];
+  }>;
+  /** Wall-clock ms when plan_ready arrived. Used by the bubble to show elapsed wait. */
+  at: number;
+}
 
 export interface StreamingTurn {
   taskId: string;
   status: StreamingStatus;
   startedAt: number;
+  /** True when reconstructed after reload from server/global SSE state. */
+  recovered?: boolean;
   finishedAt?: number;
   currentPhase?: PhaseName;
   phaseTimings: PhaseTiming[];
@@ -84,22 +150,84 @@ export interface StreamingTurn {
   contractViolations?: { count: number; policy: string };
   /** Plan/DAG snapshot from `agent:plan_update`. Drives the session setup card. */
   planSteps: PlanStep[];
+  /**
+   * Per-step LLM output, keyed by `PlanStep.id`. Populated by routing
+   * `agent:text_delta` and `llm:stream_delta` (kind=content) deltas to the
+   * currently-running step rather than blindly appending to `finalContent`.
+   *
+   * Why: agentic-workflow turns run an LLM call per step PLUS a final
+   * synthesis call. Without scoping, all step outputs and the synthesis
+   * concatenate into one wall of text that the user sees mid-stream — the
+   * user reported seeing step 1's output ("3 concepts") and step 2's output
+   * (a plot outline) stacked together as if they were the answer.
+   *
+   * Routing rule (in `agent:text_delta` / `llm:stream_delta` content):
+   *   - if a plan step is `running` → append delta to `stepOutputs[stepId]`
+   *   - else (planner pre-plan, synthesis post-steps, non-workflow tasks)
+   *     → append to `finalContent` as before
+   *
+   * `task:complete` overwrites `finalContent` with `result.content`, which
+   * is the synthesized final answer — so the FinalAnswer surface is clean
+   * and the per-step bodies stay collapsible inside `PlanSurface`.
+   */
+  stepOutputs: Record<string, string>;
+  /**
+   * Chronological log of orchestrator decisions (skill match, routing,
+   * synthesis, capability research). Powers the inline ProcessTimeline
+   * surface that mirrors Claude-Code-style "process thinking" panels.
+   * Capped at PROCESS_LOG_MAX entries (FIFO).
+   */
+  processLog: ProcessLogEntry[];
+  /**
+   * Workflow approval gate (Phase E). Set by `workflow:plan_ready` when
+   * `awaitingApproval=true`; cleared on `workflow:plan_approved` /
+   * `workflow:plan_rejected` or terminal task events. While set, the chat
+   * bubble renders an inline Approve / Reject card.
+   */
+  pendingApproval?: PendingApproval;
+  /** Internal stream bookkeeping used to de-dupe legacy/rich text events. */
+  stream?: StreamState;
   error?: string;
+}
+
+interface StreamState {
+  /** Rich deltas are the preferred source once observed. */
+  activeSource?: 'legacy' | 'rich';
+  /** Last legacy text delta, used to suppress the immediately mirrored rich event. */
+  lastLegacyText?: string;
 }
 
 export interface PlanStep {
   id: string;
   label: string;
   status: 'pending' | 'running' | 'done' | 'skipped' | 'failed';
+  /**
+   * Tool calls attributed to this step. Populated by the reducer at the
+   * moment a tool starts (matched via the currently-running step) and
+   * preserved across `agent:plan_update` snapshots.
+   */
+  toolCallIds: string[];
+  /** Wall-clock ms when the step transitioned to `running`. */
+  startedAt?: number;
+  /** Wall-clock ms when the step transitioned to a terminal status. */
+  finishedAt?: number;
 }
 
 interface StreamingTurnState {
   /** Keyed by sessionId. Only one active turn per session at a time. */
   bySession: Record<string, StreamingTurn | undefined>;
+  /** Runtime index so global SSE events can be routed back to recovered turns. */
+  taskSessionIndex: Record<string, string | undefined>;
   /** Called on send() — starts a fresh turn for this session. */
   start: (sessionId: string) => void;
+  /** Called after refresh when /tasks reports that this session still has a running task. */
+  hydrateRunningTask: (sessionId: string, taskId: string) => void;
+  /** Clears only a recovered turn, including stale running turns after /tasks says it is gone. */
+  dropRecovered: (sessionId: string) => void;
   /** Called on each SSE event. No-op if we don't have an active turn yet. */
   ingest: (sessionId: string, event: SSEEvent) => void;
+  /** Called by the global SSE stream; only mutates recovered turns to avoid POST-stream duplicates. */
+  ingestGlobal: (event: SSEEvent) => { sessionId: string; taskId: string; status: StreamingStatus } | null;
   /** Called when the send mutation ends (success or error) — clears the bubble. */
   clear: (sessionId: string) => void;
   /**
@@ -111,11 +239,12 @@ interface StreamingTurnState {
   setError: (sessionId: string, reason: string) => void;
 }
 
-function emptyTurn(): StreamingTurn {
+export function emptyTurn(options: { taskId?: string; startedAt?: number; recovered?: boolean } = {}): StreamingTurn {
   return {
-    taskId: '',
+    taskId: options.taskId ?? '',
     status: 'running',
-    startedAt: Date.now(),
+    startedAt: options.startedAt ?? Date.now(),
+    recovered: options.recovered,
     phaseTimings: [],
     toolCalls: [],
     oracleVerdicts: [],
@@ -125,25 +254,166 @@ function emptyTurn(): StreamingTurn {
     finalContent: '',
     reasoning: [],
     planSteps: [],
+    stepOutputs: {},
+    processLog: [],
   };
+}
+
+function taskInfoFromEvent(event: SSEEvent): { taskId?: string; sessionId?: string } {
+  const payload = event.payload ?? {};
+  const input = payload.input as Record<string, unknown> | undefined;
+  const result = payload.result as Record<string, unknown> | undefined;
+  return {
+    taskId:
+      (payload.taskId as string | undefined) ??
+      (input?.id as string | undefined) ??
+      (result?.id as string | undefined) ??
+      ((result?.trace as Record<string, unknown> | undefined)?.taskId as string | undefined),
+    sessionId: (payload.sessionId as string | undefined) ?? (input?.sessionId as string | undefined),
+  };
+}
+
+function removeTaskIndexForSession(index: Record<string, string | undefined>, sessionId: string) {
+  const next = { ...index };
+  for (const [taskId, indexedSessionId] of Object.entries(next)) {
+    if (indexedSessionId === sessionId) delete next[taskId];
+  }
+  return next;
+}
+
+function toolCallIdFromPayload(p: Record<string, unknown>, fallback: string): string {
+  return (
+    (p.toolCallId as string | undefined) ??
+    (p.toolId as string | undefined) ??
+    (p.id as string | undefined) ??
+    fallback
+  );
+}
+
+function toolNameFromPayload(p: Record<string, unknown>): string {
+  return (p.toolName as string | undefined) ?? (p.tool as string | undefined) ?? (p.name as string | undefined) ?? 'tool';
+}
+
+function parsePartialToolInput(partialJson: string | undefined): unknown {
+  if (!partialJson) return undefined;
+  try {
+    return JSON.parse(partialJson);
+  } catch {
+    return { partialJson };
+  }
+}
+
+/**
+ * Resolve which plan step a newly-started tool call should attach to.
+ * Heuristic: the first step currently in `running` status owns it. For
+ * sequential workflows this is exactly correct; for parallel topologies
+ * it picks the earliest-started running step, which is fine as a fallback
+ * since the backend doesn't surface stepId on tool events today.
+ */
+function currentRunningStepId(turn: StreamingTurn): string | undefined {
+  return turn.planSteps.find((s) => s.status === 'running')?.id;
+}
+
+function attachToolToStep(turn: StreamingTurn, toolId: string, stepId: string | undefined): StreamingTurn {
+  if (!stepId) return turn;
+  let mutated = false;
+  const planSteps = turn.planSteps.map((s) => {
+    if (s.id !== stepId || s.toolCallIds.includes(toolId)) return s;
+    mutated = true;
+    return { ...s, toolCallIds: [...s.toolCallIds, toolId] };
+  });
+  return mutated ? { ...turn, planSteps } : turn;
+}
+
+/**
+ * Append a content delta into the right bucket — either the running step's
+ * scoped output or the global `finalContent` — and update the legacy/rich
+ * dedup bookkeeping. Called from both `agent:text_delta` and the
+ * `llm:stream_delta` content branch so the routing rule lives in one place.
+ */
+function appendContentDelta(
+  turn: StreamingTurn,
+  delta: string,
+  source: 'legacy' | 'rich',
+): StreamingTurn {
+  const nextStream: StreamState = {
+    ...turn.stream,
+    activeSource: source,
+    lastLegacyText: source === 'legacy' ? delta : turn.stream?.lastLegacyText,
+  };
+  const stepId = currentRunningStepId(turn);
+  if (stepId) {
+    return {
+      ...turn,
+      stepOutputs: {
+        ...turn.stepOutputs,
+        [stepId]: (turn.stepOutputs[stepId] ?? '') + delta,
+      },
+      stream: nextStream,
+    };
+  }
+  return {
+    ...turn,
+    finalContent: turn.finalContent + delta,
+    stream: nextStream,
+  };
+}
+
+function upsertToolCall(turn: StreamingTurn, entry: ToolCall): StreamingTurn {
+  const index = turn.toolCalls.findIndex((t) => t.id === entry.id);
+  if (index < 0) return { ...turn, toolCalls: [...turn.toolCalls, entry] };
+  const existing = turn.toolCalls[index];
+  const toolCalls = [...turn.toolCalls];
+  toolCalls[index] = {
+    ...existing,
+    ...entry,
+    args: entry.args ?? existing.args,
+    result: entry.result ?? existing.result,
+    durationMs: entry.durationMs ?? existing.durationMs,
+  };
+  return { ...turn, toolCalls };
 }
 
 export const useStreamingTurnStore = create<StreamingTurnState>((set) => ({
   bySession: {},
+  taskSessionIndex: {},
   start: (sessionId) =>
     set((s) => ({
       bySession: { ...s.bySession, [sessionId]: emptyTurn() },
     })),
+  hydrateRunningTask: (sessionId, taskId) =>
+    set((s) => {
+      const prev = s.bySession[sessionId];
+      const nextIndex = { ...s.taskSessionIndex, [taskId]: sessionId };
+      if (prev?.status === 'running' && prev.taskId === taskId) {
+        return { taskSessionIndex: nextIndex };
+      }
+      return {
+        bySession: {
+          ...s.bySession,
+          [sessionId]: emptyTurn({ taskId, recovered: true }),
+        },
+        taskSessionIndex: nextIndex,
+      };
+    }),
+  dropRecovered: (sessionId) =>
+    set((s) => {
+      const prev = s.bySession[sessionId];
+      if (!prev?.recovered) return s;
+      const { [sessionId]: _drop, ...rest } = s.bySession;
+      return { bySession: rest, taskSessionIndex: removeTaskIndexForSession(s.taskSessionIndex, sessionId) };
+    }),
   clear: (sessionId) =>
     set((s) => {
       // Defense against a stale setTimeout(clear, 400) from a previously
-      // completed send racing with a freshly-started turn: if a new send
-      // has started (status === 'running'), leave its bubble alone. Clears
-      // only happen against terminal turns (done/error/input-required).
+      // completed send racing with a freshly-started turn: if the turn is
+      // still in flight (running or paused at the approval gate), leave
+      // its bubble alone. Clears only happen against terminal turns
+      // (done/error/input-required).
       const prev = s.bySession[sessionId];
-      if (prev?.status === 'running') return s;
+      if (prev?.status === 'running' || prev?.status === 'awaiting-approval') return s;
       const { [sessionId]: _drop, ...rest } = s.bySession;
-      return { bySession: rest };
+      return { bySession: rest, taskSessionIndex: removeTaskIndexForSession(s.taskSessionIndex, sessionId) };
     }),
   ingest: (sessionId, event) =>
     set((s) => {
@@ -151,8 +421,40 @@ export const useStreamingTurnStore = create<StreamingTurnState>((set) => ({
       if (!prev) return s;
       const next = reduceTurn(prev, event);
       if (next === prev) return s;
-      return { bySession: { ...s.bySession, [sessionId]: next } };
+      const taskId = next.taskId || prev.taskId;
+      return {
+        bySession: { ...s.bySession, [sessionId]: next },
+        taskSessionIndex: taskId ? { ...s.taskSessionIndex, [taskId]: sessionId } : s.taskSessionIndex,
+      };
     }),
+  ingestGlobal: (event) => {
+    let result: { sessionId: string; taskId: string; status: StreamingStatus } | null = null;
+    set((s) => {
+      const info = taskInfoFromEvent(event);
+      const taskId = info.taskId;
+      if (!taskId) return s;
+
+      const sessionId = info.sessionId ?? s.taskSessionIndex[taskId];
+      if (!sessionId) return s;
+
+      const prev = s.bySession[sessionId];
+      const nextIndex = { ...s.taskSessionIndex, [taskId]: sessionId };
+
+      if (prev && !prev.recovered) {
+        return { taskSessionIndex: nextIndex };
+      }
+
+      const base = prev ?? emptyTurn({ taskId, startedAt: event.ts || Date.now(), recovered: true });
+      const next = reduceTurn({ ...base, recovered: true }, event);
+      result = { sessionId, taskId, status: next.status };
+
+      return {
+        bySession: { ...s.bySession, [sessionId]: next },
+        taskSessionIndex: nextIndex,
+      };
+    });
+    return result;
+  },
   setError: (sessionId, reason) =>
     set((s) => {
       const prev = s.bySession[sessionId];
@@ -209,24 +511,24 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
     case 'agent:tool_started': {
       // Phase 2 UX: show a "running" tool card before execution completes.
       // Paired with `agent:tool_executed` via toolCallId.
-      const toolName = (p.toolName as string) ?? (p.name as string) ?? 'tool';
-      const toolId =
-        (p.toolCallId as string) ?? (p.id as string) ?? `${toolName}-${turn.toolCalls.length}`;
+      const toolName = toolNameFromPayload(p);
+      const toolId = toolCallIdFromPayload(p, `${toolName}-${turn.toolCalls.length}`);
       // Dedupe: if an entry with this id already exists, leave it alone.
       if (turn.toolCalls.some((t) => t.id === toolId)) return turn;
       const args = (p.args as unknown) ?? (p.input as unknown) ?? undefined;
-      return {
+      const planStepId = currentRunningStepId(turn);
+      const next: StreamingTurn = {
         ...turn,
         toolCalls: [
           ...turn.toolCalls,
-          { id: toolId, name: toolName, args, status: 'running', at: event.ts },
+          { id: toolId, name: toolName, args, status: 'running', at: event.ts, planStepId },
         ],
       };
+      return attachToolToStep(next, toolId, planStepId);
     }
     case 'agent:tool_executed': {
-      const toolName = (p.toolName as string) ?? (p.name as string) ?? 'tool';
-      const toolId =
-        (p.toolCallId as string) ?? (p.id as string) ?? `${toolName}-${turn.toolCalls.length}`;
+      const toolName = toolNameFromPayload(p);
+      const toolId = toolCallIdFromPayload(p, `${toolName}-${turn.toolCalls.length}`);
       // Backend emits `isError` (bus contract); accept legacy `success` too.
       const isError = p.isError === true ? true : p.success === false ? true : false;
       const status: ToolCall['status'] = isError ? 'error' : 'success';
@@ -327,10 +629,27 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
         const label = typeof o.label === 'string' ? o.label : undefined;
         const status = o.status as PlanStep['status'] | undefined;
         if (!id || !label) continue;
+        // Merge with the previous step entry so we preserve `toolCallIds`
+        // (set by `agent:tool_started`) and step timings across snapshots.
+        // Without this, every plan_update would overwrite the tool→step
+        // mapping that the chat UI uses to nest tools under their step.
+        const prev = turn.planSteps.find((ps) => ps.id === id);
+        const nextStatus: PlanStep['status'] = status ?? prev?.status ?? 'pending';
+        const startedAt =
+          prev?.startedAt ??
+          (nextStatus === 'running' ? event.ts || Date.now() : undefined);
+        const finishedAt =
+          prev?.finishedAt ??
+          (nextStatus === 'done' || nextStatus === 'failed' || nextStatus === 'skipped'
+            ? event.ts || Date.now()
+            : undefined);
         steps.push({
           id,
           label,
-          status: status ?? 'pending',
+          status: nextStatus,
+          toolCallIds: prev?.toolCallIds ?? [],
+          startedAt,
+          finishedAt,
         });
       }
       if (steps.length === 0) return turn;
@@ -348,14 +667,72 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
       };
     }
     case 'agent:text_delta': {
-      // Phase 2: token-level streaming. Safe no-op if never emitted.
+      // Phase 2 legacy token-level streaming. If a rich stream is active,
+      // ignore legacy mirrors to avoid duplicated assistant text.
       const delta = (p.text as string) ?? '';
       if (!delta) return turn;
-      return { ...turn, finalContent: turn.finalContent + delta };
+      if (turn.stream?.activeSource === 'rich') return turn;
+      return appendContentDelta(turn, delta, 'legacy');
+    }
+    case 'llm:stream_delta': {
+      const kind = p.kind as string | undefined;
+      switch (kind) {
+        case 'content': {
+          const delta = (p.text as string) ?? '';
+          if (!delta) return { ...turn, stream: { ...turn.stream, activeSource: 'rich' } };
+          // Suppress the rich mirror of an immediately-prior legacy delta —
+          // they carry identical text and we already routed the legacy one.
+          const duplicateLegacyMirror =
+            turn.stream?.activeSource === 'legacy' && turn.stream.lastLegacyText === delta;
+          if (duplicateLegacyMirror) {
+            return { ...turn, stream: { ...turn.stream, activeSource: 'rich' } };
+          }
+          return appendContentDelta(turn, delta, 'rich');
+        }
+        case 'thinking': {
+          const delta = (p.text as string) ?? '';
+          if (!delta) return { ...turn, stream: { ...turn.stream, activeSource: 'rich' } };
+          return {
+            ...turn,
+            thinking: `${turn.thinking ?? ''}${delta}`,
+            stream: { ...turn.stream, activeSource: 'rich' },
+          };
+        }
+        case 'tool_use_start': {
+          const toolName = toolNameFromPayload(p);
+          const toolId = toolCallIdFromPayload(p, `${toolName}-${turn.toolCalls.length}`);
+          const planStepId = currentRunningStepId(turn);
+          const next = upsertToolCall(
+            { ...turn, stream: { ...turn.stream, activeSource: 'rich' } },
+            { id: toolId, name: toolName, status: 'running', at: event.ts, planStepId },
+          );
+          return attachToolToStep(next, toolId, planStepId);
+        }
+        case 'tool_use_input': {
+          const toolName = toolNameFromPayload(p);
+          const toolId = toolCallIdFromPayload(p, `${toolName}-${turn.toolCalls.length}`);
+          const args = parsePartialToolInput(p.partialJson as string | undefined);
+          return upsertToolCall(
+            { ...turn, stream: { ...turn.stream, activeSource: 'rich' } },
+            { id: toolId, name: toolName, args, status: 'running', at: event.ts },
+          );
+        }
+        case 'tool_use_end': {
+          const toolName = toolNameFromPayload(p);
+          const toolId = toolCallIdFromPayload(p, `${toolName}-${turn.toolCalls.length}`);
+          const args = parsePartialToolInput(p.partialJson as string | undefined);
+          return upsertToolCall(
+            { ...turn, stream: { ...turn.stream, activeSource: 'rich' } },
+            { id: toolId, name: toolName, args, status: 'running', at: event.ts },
+          );
+        }
+        default:
+          return turn;
+      }
     }
     case 'task:complete': {
       const result = (p.result as Record<string, unknown> | undefined) ?? {};
-      const content = (result.content as string) ?? turn.finalContent;
+      const content = (result.content as string | undefined) ?? (result.answer as string | undefined) ?? turn.finalContent;
       const thinking = (result.thinking as string) ?? turn.thinking;
       const status = (result.status as string) ?? 'success';
       return {
@@ -381,6 +758,187 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
         finishedAt: event.ts,
         error: (p.error as string) ?? 'Worker error',
       };
+    }
+    case 'workflow:plan_ready': {
+      // Phase E: workflow executor pauses with `awaitingApproval=true` for
+      // long-form goals. Surface the plan inline so the user can approve /
+      // reject without leaving the chat. Skip the gate when not awaiting —
+      // execution is already underway, the steps will arrive via
+      // `agent:plan_update`.
+      const awaiting = p.awaitingApproval === true;
+      if (!awaiting) return turn;
+      const taskId = (p.taskId as string | undefined) ?? turn.taskId;
+      const goal = (p.goal as string | undefined) ?? '';
+      const rawSteps = Array.isArray(p.steps) ? (p.steps as unknown[]) : [];
+      const steps: PendingApproval['steps'] = [];
+      for (const s of rawSteps) {
+        if (!s || typeof s !== 'object') continue;
+        const o = s as Record<string, unknown>;
+        const id = typeof o.id === 'string' ? o.id : undefined;
+        const description = typeof o.description === 'string' ? o.description : undefined;
+        const strategy = typeof o.strategy === 'string' ? o.strategy : 'auto';
+        if (!id || !description) continue;
+        const deps = Array.isArray(o.dependencies)
+          ? (o.dependencies as unknown[]).filter((d): d is string => typeof d === 'string')
+          : [];
+        steps.push({ id, description, strategy, dependencies: deps });
+      }
+      return {
+        ...turn,
+        taskId,
+        status: 'awaiting-approval',
+        pendingApproval: { taskId, goal, steps, at: event.ts || Date.now() },
+      };
+    }
+    case 'workflow:plan_approved': {
+      if (!turn.pendingApproval) return turn;
+      // Resume execution — the executor will continue and emit step events.
+      return {
+        ...turn,
+        status: 'running',
+        pendingApproval: undefined,
+      };
+    }
+    case 'workflow:plan_rejected': {
+      // Fired both on user reject and on approval-timer expiry (executor
+      // emits this on the timeout path so UIs can tear down the prompt
+      // immediately instead of waiting for the eventual task:complete).
+      const reason =
+        (p.reason as string | undefined) ?? turn.error ?? 'Workflow plan rejected';
+      return {
+        ...turn,
+        status: 'error',
+        finishedAt: event.ts || Date.now(),
+        pendingApproval: undefined,
+        error: reason,
+      };
+    }
+    case 'workflow:step_start': {
+      // Per-step live signal complementing `agent:plan_update`. The plan
+      // checklist may already be `running` from the most recent plan_update,
+      // but this event fires inside the step so it gives us a more precise
+      // `startedAt` and lets us flip status before the next plan_update
+      // snapshot (which the executor emits after dispatch returns).
+      const stepId = p.stepId as string | undefined;
+      if (!stepId) return turn;
+      const planSteps = turn.planSteps.map((s) =>
+        s.id === stepId
+          ? { ...s, status: 'running' as const, startedAt: s.startedAt ?? (event.ts || Date.now()) }
+          : s,
+      );
+      return { ...turn, planSteps };
+    }
+    case 'workflow:step_complete': {
+      const stepId = p.stepId as string | undefined;
+      const status = p.status as 'completed' | 'failed' | 'skipped' | undefined;
+      if (!stepId || !status) return turn;
+      const mapped: PlanStep['status'] =
+        status === 'completed' ? 'done' : status === 'skipped' ? 'skipped' : 'failed';
+      const planSteps = turn.planSteps.map((s) =>
+        s.id === stepId
+          ? { ...s, status: mapped, finishedAt: event.ts || Date.now() }
+          : s,
+      );
+      return { ...turn, planSteps };
+    }
+    case 'workflow:step_fallback': {
+      // Strategy fell back; step keeps running but we don't have a plan-step
+      // status change to record. No-op for state, but reducers downstream
+      // could surface this as a sub-event. Left as a passthrough so future
+      // UI hooks have a place to land.
+      return turn;
+    }
+    // ── Capability-first observability → process timeline ──
+    case 'skill:match': {
+      const skill = (p.skill as Record<string, unknown> | undefined) ?? {};
+      const name =
+        (skill.name as string | undefined) ??
+        (skill.id as string | undefined) ??
+        (skill.skillId as string | undefined) ??
+        'unknown';
+      return appendProcessLog(turn, {
+        id: `skill-match-${event.ts}`,
+        kind: 'skill_match',
+        label: `Loaded skill: ${name}`,
+        status: 'success',
+        at: event.ts,
+      });
+    }
+    case 'skill:miss': {
+      const sig = typeof p.taskSignature === 'string' ? (p.taskSignature as string) : '';
+      return appendProcessLog(turn, {
+        id: `skill-miss-${event.ts}`,
+        kind: 'skill_miss',
+        label: 'No matching skill',
+        detail: sig || undefined,
+        status: 'info',
+        at: event.ts,
+      });
+    }
+    case 'agent:routed': {
+      const agentId = typeof p.agentId === 'string' ? (p.agentId as string) : 'agent';
+      const reason = typeof p.reason === 'string' ? (p.reason as string) : undefined;
+      const score = typeof p.score === 'number' ? (p.score as number) : undefined;
+      const detailParts: string[] = [];
+      if (reason) detailParts.push(reason);
+      if (typeof score === 'number') detailParts.push(`score ${score.toFixed(2)}`);
+      return appendProcessLog(turn, {
+        id: `agent-routed-${event.ts}`,
+        kind: 'agent_routed',
+        label: `Routed to ${agentId}`,
+        detail: detailParts.length > 0 ? detailParts.join(' · ') : undefined,
+        status: 'info',
+        at: event.ts,
+      });
+    }
+    case 'agent:synthesized': {
+      const agentId = typeof p.agentId === 'string' ? (p.agentId as string) : 'agent';
+      const caps = Array.isArray(p.capabilities) ? (p.capabilities as string[]) : [];
+      const rationale = typeof p.rationale === 'string' ? (p.rationale as string) : undefined;
+      return appendProcessLog(turn, {
+        id: `agent-synth-${event.ts}`,
+        kind: 'agent_synthesized',
+        label: `Synthesized agent ${agentId}`,
+        detail: caps.length > 0 ? `for ${caps.join(', ')}${rationale ? ` — ${rationale}` : ''}` : rationale,
+        status: 'success',
+        at: event.ts,
+      });
+    }
+    case 'agent:synthesis-failed': {
+      const reason = typeof p.reason === 'string' ? (p.reason as string) : 'unknown error';
+      return appendProcessLog(turn, {
+        id: `agent-synth-fail-${event.ts}`,
+        kind: 'agent_synthesis_failed',
+        label: 'Agent synthesis failed',
+        detail: reason,
+        status: 'warn',
+        at: event.ts,
+      });
+    }
+    case 'agent:capability-research': {
+      const caps = Array.isArray(p.capabilities) ? (p.capabilities as string[]) : [];
+      const contextCount = typeof p.contextCount === 'number' ? (p.contextCount as number) : 0;
+      const sources = Array.isArray(p.sources) ? (p.sources as string[]) : [];
+      const capLabel = caps.length > 0 ? caps.join(', ') : 'capability';
+      return appendProcessLog(turn, {
+        id: `cap-research-${event.ts}`,
+        kind: 'capability_research',
+        label: `Researched ${capLabel}`,
+        detail: `${contextCount} hit${contextCount === 1 ? '' : 's'}${sources.length > 0 ? ` from ${sources.join(', ')}` : ''}`,
+        status: 'info',
+        at: event.ts,
+      });
+    }
+    case 'agent:capability-research-failed': {
+      const reason = typeof p.reason === 'string' ? (p.reason as string) : 'unknown error';
+      return appendProcessLog(turn, {
+        id: `cap-research-fail-${event.ts}`,
+        kind: 'capability_research_failed',
+        label: 'Capability research failed',
+        detail: reason,
+        status: 'warn',
+        at: event.ts,
+      });
     }
     default:
       return turn;

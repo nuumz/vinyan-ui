@@ -4,6 +4,7 @@ import { useMemory, useApproveMemory, useRejectMemory } from '@/hooks/use-memory
 import { PageHeader } from '@/components/ui/page-header';
 import { Badge } from '@/components/ui/badge';
 import { EmptyState } from '@/components/ui/empty-state';
+import { ErrorState } from '@/components/ui/error-state';
 import { TableSkeleton } from '@/components/ui/skeleton';
 import { DetailDrawer } from '@/components/ui/detail-drawer';
 import { cn } from '@/lib/utils';
@@ -73,6 +74,14 @@ export default function Memory() {
 
       {loading ? (
         <TableSkeleton rows={3} />
+      ) : query.isError ? (
+        <div className="bg-surface rounded-lg border border-border">
+          <ErrorState
+            error={query.error}
+            onRetry={() => query.refetch()}
+            retrying={query.isFetching}
+          />
+        </div>
       ) : (
         <div className="bg-surface rounded-lg border border-border overflow-hidden">
           {proposals.length === 0 ? (

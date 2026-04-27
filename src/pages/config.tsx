@@ -25,7 +25,11 @@ export default function Config() {
       if (result.valid) {
         toast.success('Config is valid');
       } else {
-        toast.error(`${result.errors?.length ?? 0} validation error(s)`);
+        const count = result.errors?.length ?? 0;
+        const first = result.errors?.[0];
+        toast.error(`${count} validation error${count === 1 ? '' : 's'}`, {
+          hint: first ? `${first.path}: ${first.message}` : undefined,
+        });
       }
     } catch {
       /* onError already toasts */

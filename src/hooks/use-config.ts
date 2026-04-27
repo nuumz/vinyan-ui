@@ -15,7 +15,7 @@ export function useValidateConfig() {
   return useMutation({
     mutationFn: (body: unknown) => api.validateConfig(body),
     onError: (err) => {
-      toast.error(err instanceof Error ? err.message : 'Validation request failed');
+      toast.apiError(err, { fallback: 'Validation request failed' });
     },
   });
 }

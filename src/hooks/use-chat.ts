@@ -13,7 +13,11 @@ interface MessagesPayload {
 export function useSessionMessages(sessionId: string | null) {
   return useQuery({
     queryKey: qk.sessionMessages(sessionId ?? ''),
-    queryFn: () => api.getMessages(sessionId!),
+    // Bound history to the most recent 200 entries. Long-running sessions
+    // would otherwise download thousands of turns on every mount and the
+    // table-style render dominates first paint. The backend response
+    // shape `messages: ConversationEntry[]` is already the most recent N.
+    queryFn: () => api.getMessages(sessionId!, 200),
     enabled: !!sessionId,
     staleTime: Infinity,
   });
@@ -96,7 +100,11 @@ export function useSendMessage(sessionId: string | null) {
         setTurnError(sid, reason);
         setTimeout(() => clearTurn(sid), 400);
       }
-      toast.error(err instanceof Error ? err.message : 'Failed to send message');
+      // The streaming bubble itself shows the structured error + Retry, so
+      // the toast is just a secondary nudge for users whose bubble has
+      // scrolled offscreen. No Retry action here — clicking the bubble's
+      // button is the canonical path (it preserves the original input).
+      toast.apiError(err, { fallback: 'Failed to send message' });
     },
   });
 }

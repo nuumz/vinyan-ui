@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
 import { useEventsStore } from '@/store/vinyan-store';
+import { useConnectionStore } from '@/store/connection-store';
 import { EventBadge } from '@/components/ui/badge';
 import { PageHeader } from '@/components/ui/page-header';
 import { timeAgo } from '@/lib/utils';
@@ -12,11 +13,13 @@ const EVENT_TYPES = [
   'skill:match', 'skill:miss', 'tools:executed',
   'agent:session_start', 'agent:session_end', 'agent:turn_complete',
   'agent:tool_executed', 'agent:clarification_requested',
+  'llm:stream_delta',
 ] as const;
 
 export default function Events() {
   const events = useEventsStore((s) => s.events);
   const clearEvents = useEventsStore((s) => s.clearEvents);
+  const sseConnected = useConnectionStore((s) => s.sseConnected);
   const [filter, setFilter] = useState('');
   const [expanded, setExpanded] = useState<string | null>(null);
 
@@ -66,10 +69,32 @@ export default function Events() {
       <div className="bg-surface rounded-lg border border-border overflow-hidden">
         <div className="overflow-auto" style={{ maxHeight: 'calc(100vh - 240px)' }}>
           {filtered.length === 0 ? (
-            <div className="text-sm text-text-dim text-center py-8">Waiting for events...</div>
+            <div className="text-center py-12 px-6 space-y-2">
+              <div className="flex items-center justify-center gap-2 text-sm text-text-dim">
+                {sseConnected ? (
+                  <>
+                    <span className="relative flex h-2 w-2">
+                      <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-60 animate-ping" />
+                      <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                    </span>
+                    Live — no events yet
+                  </>
+                ) : (
+                  <>
+                    <span className="inline-flex h-2 w-2 rounded-full bg-amber-500" />
+                    Stream disconnected — reconnecting…
+                  </>
+                )}
+              </div>
+              <div className="text-xs text-text-dim/70 max-w-md mx-auto">
+                {filter
+                  ? `No events match "${filter}". Clear the filter to see all events.`
+                  : 'Events appear in real time when tasks run, agents work, or sessions update. Recent events are kept locally across refreshes.'}
+              </div>
+            </div>
           ) : (
             filtered.map(({ event: e, key, preview }) => (
-              <div key={key} className="border-b border-border/50 hover:bg-white/[0.02]">
+              <div key={key} className="border-b border-border/50 hover:bg-white/2">
                 <button
                   type="button"
                   className="w-full flex items-center gap-3 px-4 py-2 text-xs text-left"

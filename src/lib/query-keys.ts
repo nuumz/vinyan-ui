@@ -8,6 +8,7 @@ export const qk = {
   task: (id: string) => ['tasks', id] as const,
   workers: ['workers'] as const,
   sessions: ['sessions'] as const,
+  sessionsList: (state: string, search: string) => ['sessions', 'list', state, search] as const,
   sessionMessages: (id: string) => ['sessions', id, 'messages'] as const,
   rules: (status?: string) => (status ? (['rules', status] as const) : (['rules'] as const)),
   oracles: ['oracles'] as const,

@@ -4,6 +4,7 @@ import { useSkills } from '@/hooks/use-skills';
 import { PageHeader } from '@/components/ui/page-header';
 import { Badge, StatusBadge } from '@/components/ui/badge';
 import { EmptyState } from '@/components/ui/empty-state';
+import { ErrorState } from '@/components/ui/error-state';
 import { TableSkeleton } from '@/components/ui/skeleton';
 import { DetailDrawer } from '@/components/ui/detail-drawer';
 import { Tabs, type TabItem } from '@/components/ui/tabs';
@@ -84,6 +85,14 @@ export default function Skills() {
 
       {loading ? (
         <TableSkeleton rows={4} />
+      ) : skillsQuery.isError ? (
+        <div className="bg-surface rounded-lg border border-border">
+          <ErrorState
+            error={skillsQuery.error}
+            onRetry={() => skillsQuery.refetch()}
+            retrying={skillsQuery.isFetching}
+          />
+        </div>
       ) : (
         <div className="bg-surface rounded-lg border border-border overflow-hidden">
           {filtered.length === 0 ? (

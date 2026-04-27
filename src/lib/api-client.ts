@@ -253,9 +253,34 @@ export interface MCPReport {
 export interface Session {
   id: string;
   source: string;
-  status: 'active' | 'suspended';
+  status: 'active' | 'suspended' | 'compacted' | 'closed';
   createdAt: number;
+  updatedAt: number;
   taskCount: number;
+  title: string | null;
+  description: string | null;
+  archivedAt: number | null;
+  deletedAt: number | null;
+}
+
+export type SessionListState = 'active' | 'archived' | 'deleted' | 'all';
+
+export interface ListSessionsParams {
+  state?: SessionListState;
+  search?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface CreateSessionPayload {
+  source?: string;
+  title?: string | null;
+  description?: string | null;
+}
+
+export interface UpdateSessionPayload {
+  title?: string | null;
+  description?: string | null;
 }
 
 export type RuleStatus = 'active' | 'probation' | 'retired';
@@ -548,7 +573,28 @@ export interface ConversationEntry {
   taskId: string;
   timestamp: number;
   thinking?: string;
-  toolsUsed?: string[];
+  /**
+   * Legacy shape — old backends returned `string[]`. New backends (server.ts
+   * `getConversationHistoryDetailed`) return a richer structured shape so
+   * the chat UI can render a "tools used" chip without re-fetching the
+   * trace. Both are accepted to keep older deployments working.
+   */
+  toolsUsed?: string[] | Array<{ id: string; name: string; inputPreview: string }>;
+  /**
+   * Slim summary of the ExecutionTrace for this turn — only present on
+   * assistant messages where a TraceStore was wired server-side. Powers
+   * the model/routing/duration chip row on past assistant bubbles.
+   */
+  traceSummary?: {
+    routingLevel: number;
+    modelUsed: string;
+    durationMs: number;
+    tokensConsumed: number;
+    outcome: string;
+    approach?: string;
+    oracleVerdictCount: number;
+    affectedFiles: string[];
+  };
   tokenEstimate: number;
 }
 
@@ -799,6 +845,32 @@ export const api = {
   cancelTask: (id: string) =>
     fetchJSON<{ taskId: string; status: string }>(`/tasks/${id}`, { method: 'DELETE' }),
 
+  /**
+   * Persisted bus-event log for a past task. Powers the historical Process
+   * card in the chat: feeds the same `reduceTurn` reducer used live to
+   * reconstruct the Phase / Tools / Oracles / Plan / Reasoning surfaces.
+   *
+   * Returns 404 when the backend has no DB / recorder wired — callers
+   * should treat that case as "no history available" and fall back to
+   * just rendering the trace summary chip row.
+   */
+  getTaskEventHistory: (taskId: string, since?: number) => {
+    const qs = since !== undefined ? `?since=${since}` : '';
+    return fetchJSON<{
+      taskId: string;
+      events: Array<{
+        id: string;
+        taskId: string;
+        sessionId?: string;
+        seq: number;
+        eventType: string;
+        payload: Record<string, unknown>;
+        ts: number;
+      }>;
+      lastSeq: number;
+    }>(`/tasks/${encodeURIComponent(taskId)}/event-history${qs}`);
+  },
+
   // Approval (A6)
   getPendingApprovals: () => fetchJSON<{ pending: string[] }>('/approvals'),
   approveTask: (taskId: string, decision: 'approved' | 'rejected') =>
@@ -808,10 +880,40 @@ export const api = {
     }),
 
   // Sessions (auth required)
-  getSessions: () => fetchJSON<{ sessions: Session[] }>('/sessions'),
-  createSession: (source = 'ui') =>
-    fetchJSON<{ session: Session }>('/sessions', { method: 'POST', body: JSON.stringify({ source }) }),
+  getSessions: (params: ListSessionsParams = {}) => {
+    const qs = new URLSearchParams();
+    if (params.state) qs.set('state', params.state);
+    if (params.search) qs.set('search', params.search);
+    if (typeof params.limit === 'number') qs.set('limit', String(params.limit));
+    if (typeof params.offset === 'number') qs.set('offset', String(params.offset));
+    const tail = qs.toString();
+    return fetchJSON<{ sessions: Session[] }>(`/sessions${tail ? `?${tail}` : ''}`);
+  },
+  createSession: (payload: CreateSessionPayload = {}) => {
+    const body = {
+      source: payload.source ?? 'ui',
+      ...(payload.title !== undefined ? { title: payload.title } : {}),
+      ...(payload.description !== undefined ? { description: payload.description } : {}),
+    };
+    return fetchJSON<{ session: Session }>('/sessions', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
   getSession: (id: string) => fetchJSON<{ session: Session }>(`/sessions/${id}`),
+  updateSession: (id: string, patch: UpdateSessionPayload) =>
+    fetchJSON<{ session: Session }>(`/sessions/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
+  archiveSession: (id: string) =>
+    fetchJSON<{ session: Session }>(`/sessions/${id}/archive`, { method: 'POST' }),
+  unarchiveSession: (id: string) =>
+    fetchJSON<{ session: Session }>(`/sessions/${id}/unarchive`, { method: 'POST' }),
+  deleteSession: (id: string) =>
+    fetchJSON<{ session: Session }>(`/sessions/${id}`, { method: 'DELETE' }),
+  restoreSession: (id: string) =>
+    fetchJSON<{ session: Session }>(`/sessions/${id}/restore`, { method: 'POST' }),
   compactSession: (id: string) =>
     fetchJSON<{ compaction: unknown }>(`/sessions/${id}/compact`, { method: 'POST' }),
 
@@ -827,6 +929,19 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ content, showThinking: options?.showThinking }),
     }),
+
+  // Workflow approval gate (Phase E). Long-form goals pause execution until
+  // the user approves the plan; these endpoints resolve the gate.
+  approveWorkflow: (sessionId: string, taskId: string) =>
+    fetchJSON<{ taskId: string; sessionId: string; status: 'approved' }>(
+      `/sessions/${sessionId}/workflow/approve`,
+      { method: 'POST', body: JSON.stringify({ taskId }) },
+    ),
+  rejectWorkflow: (sessionId: string, taskId: string, reason?: string) =>
+    fetchJSON<{ taskId: string; sessionId: string; status: 'rejected' }>(
+      `/sessions/${sessionId}/workflow/reject`,
+      { method: 'POST', body: JSON.stringify({ taskId, reason }) },
+    ),
 
   /**
    * Send a message using SSE streaming. Returns an async generator that

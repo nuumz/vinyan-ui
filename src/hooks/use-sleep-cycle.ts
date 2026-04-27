@@ -21,7 +21,7 @@ export function useTriggerSleepCycle() {
       qc.invalidateQueries({ queryKey: qk.sleepCycle });
     },
     onError: (err) => {
-      toast.error(err instanceof Error ? err.message : 'Trigger failed');
+      toast.apiError(err, { fallback: 'Trigger failed' });
     },
   });
 }

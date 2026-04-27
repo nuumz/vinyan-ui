@@ -1,8 +1,18 @@
 import { useState } from 'react';
-import { HelpCircle } from 'lucide-react';
+import {
+  ChevronDown,
+  ChevronRight,
+  Clock,
+  Cpu,
+  HelpCircle,
+  Layers,
+  Hash,
+  ShieldCheck,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { ConversationEntry } from '@/lib/api-client';
 import { Markdown } from './markdown';
+import { HistoricalProcessCard } from './historical-process-card';
 
 const INPUT_REQUIRED_TAG = '[INPUT-REQUIRED]';
 
@@ -24,10 +34,39 @@ function parseInputRequiredBlock(content: string): { preamble: string; questions
   return { preamble, questions };
 }
 
+/**
+ * Backwards-compatible accessor for the `toolsUsed` field. Old backends
+ * returned `string[]` (tool names); newer backends return
+ * `{id, name, inputPreview}[]`. We normalize to display labels here so
+ * every render path uses the same shape.
+ */
+function normalizeToolsUsed(
+  toolsUsed: ConversationEntry['toolsUsed'],
+): Array<{ key: string; label: string }> {
+  if (!toolsUsed || toolsUsed.length === 0) return [];
+  return toolsUsed.map((t, idx) =>
+    typeof t === 'string'
+      ? { key: `${idx}:${t}`, label: t }
+      : { key: t.id || `${idx}:${t.name}`, label: t.name },
+  );
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const min = Math.floor(ms / 60_000);
+  const sec = Math.floor((ms % 60_000) / 1000);
+  return `${min}m${sec}s`;
+}
+
 export function MessageBubble({ message }: { message: ConversationEntry }) {
   const isUser = message.role === 'user';
   const [showThinking, setShowThinking] = useState(false);
+  const [showProcess, setShowProcess] = useState(false);
   const clarification = !isUser ? parseInputRequiredBlock(message.content) : null;
+  const tools = normalizeToolsUsed(message.toolsUsed);
+  const trace = !isUser ? message.traceSummary : undefined;
+  const hasProcess = !isUser && Boolean(message.taskId);
 
   return (
     <div className={cn('flex', isUser ? 'justify-end' : 'justify-start')}>
@@ -61,6 +100,75 @@ export function MessageBubble({ message }: { message: ConversationEntry }) {
           <Markdown content={message.content} />
         )}
 
+        {/*
+          Trace summary chip row — model / routing level / duration / tokens.
+          Shown only on assistant messages where the backend wired a
+          TraceStore. Outcome leads as a colored status pill; remaining
+          chips are quieter metadata with subtle leading icons.
+        */}
+        {trace && (
+          <div className="mt-2.5 flex flex-wrap items-center gap-1.5 text-[11px]">
+            <span
+              className={cn(
+                'inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full font-medium border',
+                trace.outcome === 'success'
+                  ? 'bg-green/10 text-green border-green/25'
+                  : trace.outcome === 'failure'
+                    ? 'bg-red/10 text-red border-red/25'
+                    : 'bg-yellow/10 text-yellow border-yellow/25',
+              )}
+            >
+              <span
+                className={cn(
+                  'h-1.5 w-1.5 rounded-full',
+                  trace.outcome === 'success'
+                    ? 'bg-green'
+                    : trace.outcome === 'failure'
+                      ? 'bg-red'
+                      : 'bg-yellow',
+                )}
+              />
+              {trace.outcome}
+            </span>
+            <span
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-bg/50 text-text-dim border border-border/70"
+              title="Model"
+            >
+              <Cpu size={10} className="text-accent/80" />
+              {trace.modelUsed}
+            </span>
+            <span
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-bg/50 text-text-dim border border-border/70"
+              title="Risk routing level"
+            >
+              <Layers size={10} />L{trace.routingLevel}
+            </span>
+            <span
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-bg/50 text-text-dim border border-border/70"
+              title="Duration"
+            >
+              <Clock size={10} />
+              {formatDuration(trace.durationMs)}
+            </span>
+            <span
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-bg/50 text-text-dim border border-border/70"
+              title="Tokens consumed"
+            >
+              <Hash size={10} />
+              {trace.tokensConsumed.toLocaleString()}
+            </span>
+            {trace.oracleVerdictCount > 0 && (
+              <span
+                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-bg/50 text-text-dim border border-border/70"
+                title="Oracle verdicts"
+              >
+                <ShieldCheck size={10} />
+                {trace.oracleVerdictCount}
+              </span>
+            )}
+          </div>
+        )}
+
         {message.thinking && (
           <div className="mt-2 border-t border-border/50 pt-2">
             <button
@@ -78,21 +186,47 @@ export function MessageBubble({ message }: { message: ConversationEntry }) {
           </div>
         )}
 
-        {message.toolsUsed && message.toolsUsed.length > 0 && (
+        {tools.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1">
-            {message.toolsUsed.map((t) => (
+            {tools.map((t) => (
               <span
-                key={t}
+                key={t.key}
                 className="px-1.5 py-0.5 text-xs rounded bg-purple/10 text-purple border border-purple/20"
               >
-                {t}
+                {t.label}
               </span>
             ))}
           </div>
         )}
 
-        <div className="text-xs text-text-dim mt-1.5">
-          {new Date(message.timestamp).toLocaleTimeString()}
+        {/*
+          Process replay is a secondary debug affordance. Keep the control
+          in the footer with the timestamp (instead of adding another
+          horizontal section) so the message body stays easy to scan.
+        */}
+        {hasProcess && showProcess && (
+          <div className="mt-3">
+            <HistoricalProcessCard taskId={message.taskId} />
+          </div>
+        )}
+
+        <div className="mt-2.5 flex items-center justify-between gap-3 text-xs text-text-dim">
+          <span>{new Date(message.timestamp).toLocaleTimeString()}</span>
+          {hasProcess && (
+            <button
+              type="button"
+              className={cn(
+                'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition-colors',
+                'text-text-dim/80 hover:bg-bg/35 hover:text-text',
+                showProcess && 'bg-bg/30 text-text',
+              )}
+              onClick={() => setShowProcess(!showProcess)}
+              aria-expanded={showProcess}
+            >
+              <span className="font-medium">Process</span>
+              {showProcess ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+            </button>
+          )}
         </div>
       </div>
     </div>

@@ -4,6 +4,7 @@ import { usePatterns } from '@/hooks/use-patterns';
 import { PageHeader } from '@/components/ui/page-header';
 import { Badge } from '@/components/ui/badge';
 import { EmptyState } from '@/components/ui/empty-state';
+import { ErrorState } from '@/components/ui/error-state';
 import { TableSkeleton } from '@/components/ui/skeleton';
 import { DetailDrawer } from '@/components/ui/detail-drawer';
 import { Tabs, type TabItem } from '@/components/ui/tabs';
@@ -96,6 +97,14 @@ export default function Patterns() {
 
       {loading ? (
         <TableSkeleton rows={4} />
+      ) : patternsQuery.isError ? (
+        <div className="bg-surface rounded-lg border border-border">
+          <ErrorState
+            error={patternsQuery.error}
+            onRetry={() => patternsQuery.refetch()}
+            retrying={patternsQuery.isFetching}
+          />
+        </div>
       ) : (
         <div className="bg-surface rounded-lg border border-border overflow-hidden">
           {filtered.length === 0 ? (
