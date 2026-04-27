@@ -37,3 +37,26 @@ export function useCancelTask() {
     },
   });
 }
+
+/**
+ * Manual retry for a failed/timed-out task. Uses POST /tasks/:id/retry so
+ * the new task is linked to the parent and inherits sessionId/goal/files.
+ */
+export function useRetryTask() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: {
+      taskId: string;
+      reason?: string;
+      maxDurationMs?: number;
+      goal?: string;
+    }) => {
+      const { taskId, ...body } = args;
+      return api.retryTask(taskId, body);
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.tasks }),
+    onError: (err) => {
+      toast.apiError(err, { fallback: 'Failed to retry task' });
+    },
+  });
+}

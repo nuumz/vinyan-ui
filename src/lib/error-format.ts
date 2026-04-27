@@ -94,6 +94,88 @@ function cleanMessage(raw: string, body?: string): string {
   return raw;
 }
 
+/**
+ * Friendly-up well-known backend error strings before the generic classifier
+ * runs. The backend produces strings like
+ *   "Task timed out after 151s (budget: 120s) at routing level L2. Try
+ *    narrowing the request, or raise --max-duration ..."
+ * which leak CLI / routing-internal vocabulary into the chat UI. Map them to
+ * a short title + actionable hint, but keep the original string in `detail`
+ * so power users can still inspect the raw message via "Show details".
+ *
+ * Pattern matches a literal string (or any value coerced via `String(err)`),
+ * not the `Error.message` directly — `task:complete`-style failures arrive
+ * as the assistant message body, not as a thrown Error.
+ */
+function friendlyBackendError(rawMessage: string): FormattedError | null {
+  const raw = rawMessage.trim();
+
+  // Approval window expiry — workflow gate auto-approves on timeout now, so
+  // the user only sees this if a sibling client rejected. Either way it's
+  // not a hard error.
+  if (/^Approval timed out after \d+ms/.test(raw)) {
+    return {
+      title: 'Approval expired',
+      hint:
+        'The 10-minute approval window passed. Vinyan auto-approves on timeout — your message will continue automatically. Retry to start fresh.',
+      detail: raw,
+      kind: 'timeout',
+      retriable: true,
+    };
+  }
+
+  // Wall-clock task timeout from core-loop.ts:2602. Strip the L<n> /
+  // --max-duration jargon — chat users don't have a CLI flag.
+  const taskTimeout = /^Task timed out after (\d+)s/.exec(raw);
+  if (taskTimeout) {
+    const seconds = taskTimeout[1];
+    return {
+      title: 'Task took too long',
+      hint: `This complex task didn't finish within ~${seconds}s. Try simplifying the request or splitting it into smaller pieces, then retry.`,
+      detail: raw,
+      kind: 'timeout',
+      retriable: true,
+    };
+  }
+
+  // LLM proxy IPC timeout — usually transient (the underlying provider was
+  // slow). Retry frequently works.
+  if (/^LLM proxy timeout after \d+ms/.test(raw)) {
+    return {
+      title: 'Model took too long',
+      hint: 'The model didn\'t respond in time. Retrying often succeeds.',
+      detail: raw,
+      kind: 'timeout',
+      retriable: true,
+    };
+  }
+
+  // User-driven rejection of a workflow plan — explicit choice, not a system
+  // error. Don't offer retry; offer "send a new message" instead.
+  if (/^User rejected workflow plan/.test(raw)) {
+    return {
+      title: 'You rejected the plan',
+      hint: 'Send a new message to start over with adjusted instructions.',
+      detail: raw,
+      kind: 'client',
+      retriable: false,
+    };
+  }
+
+  // Worker subprocess crash / generic worker error.
+  if (/^Worker error\b/.test(raw)) {
+    return {
+      title: 'Worker error',
+      hint: 'The worker subprocess failed. Retry usually recovers; check backend logs if it persists.',
+      detail: raw,
+      kind: 'server',
+      retriable: true,
+    };
+  }
+
+  return null;
+}
+
 export function formatError(err: unknown, fallback = 'Unknown error'): FormattedError {
   const kind = classify(err);
   const retriable =
@@ -102,6 +184,18 @@ export function formatError(err: unknown, fallback = 'Unknown error'): Formatted
     kind === 'server' ||
     kind === 'rate' ||
     (err instanceof ApiError && err.status === 408);
+
+  // Try the friendly-up shortcut first for raw strings + Error.message —
+  // falls through to the generic ApiError / Error / string handling below
+  // when no pattern matches.
+  if (typeof err === 'string') {
+    const friendly = friendlyBackendError(err);
+    if (friendly) return friendly;
+  }
+  if (err instanceof Error) {
+    const friendly = friendlyBackendError(err.message);
+    if (friendly) return friendly;
+  }
 
   if (err instanceof ApiError) {
     const title = cleanMessage(err.message, err.body) || defaultTitle(kind);

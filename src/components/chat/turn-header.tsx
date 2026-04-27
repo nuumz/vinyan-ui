@@ -77,6 +77,32 @@ function deriveStatus(turn: StreamingTurn, elapsedMs: number): HeaderStatus {
     ? turn.planSteps.findIndex((s) => s.id === runningStep.id) + 1
     : 0;
   const stepLabel = totalSteps > 0 && stepIndex > 0 ? `Step ${stepIndex} of ${totalSteps}` : null;
+  // Sub-stage detail wins over generic "Planning" / "Working" copy when the
+  // backend has emitted a `task:stage_update`. We only consult it while no
+  // step or tool is actively running — once the worker is invoking a tool,
+  // the tool name is more informative than e.g. "plan:ready". We also hide
+  // it on `exited` events because by then the next phase usually has its
+  // own header (avoids stale "Planning · Ready" once Generate is running).
+  const stageDetail = turn.currentStageDetail;
+  if (
+    !runningStep &&
+    !runningTool &&
+    stageDetail &&
+    stageDetail.status !== 'exited' &&
+    turn.currentPhase !== 'verify'
+  ) {
+    const phaseTitle = stageDetail.phase.charAt(0).toUpperCase() + stageDetail.phase.slice(1);
+    const stageTitle = stageDetail.stage.replace(/-/g, ' ');
+    const attemptSuffix =
+      stageDetail.attempt && stageDetail.attempt > 1 ? ` · attempt ${stageDetail.attempt}` : '';
+    return {
+      label: `${phaseTitle} · ${stageTitle}${attemptSuffix}`,
+      detail: stageDetail.reason,
+      Icon: Sparkles,
+      tone: 'text-accent',
+      pulse: true,
+    };
+  }
   if (runningTool) {
     return {
       label: 'Using tool',

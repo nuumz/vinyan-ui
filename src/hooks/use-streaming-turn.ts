@@ -126,6 +126,19 @@ export interface StreamingTurn {
   recovered?: boolean;
   finishedAt?: number;
   currentPhase?: PhaseName;
+  /**
+   * Sub-stage emitted by `task:stage_update` (e.g. `plan:decomposing`,
+   * `plan:approval-gate`). Lets the chat header show "Planning · Decomposing"
+   * instead of just "Planning". Observational only — never used for routing.
+   */
+  currentStageDetail?: {
+    phase: string;
+    stage: string;
+    status: 'entered' | 'progress' | 'exited';
+    attempt?: number;
+    reason?: string;
+    at: number;
+  };
   phaseTimings: PhaseTiming[];
   toolCalls: ToolCall[];
   oracleVerdicts: OracleVerdictEntry[];
@@ -508,6 +521,25 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
         phaseTimings: [...turn.phaseTimings, { phase, durationMs, at: event.ts }],
       };
     }
+    case 'task:stage_update': {
+      // Sub-stage telemetry. Observational only — never alters routing
+      // or any other governance state. We keep the latest snapshot so
+      // the header shows the most recent "Planning · Decomposing" style
+      // marker until a new stage or phase advance overrides it.
+      const phase = typeof p.phase === 'string' ? p.phase : undefined;
+      const stage = typeof p.stage === 'string' ? p.stage : undefined;
+      const status =
+        p.status === 'entered' || p.status === 'progress' || p.status === 'exited'
+          ? (p.status as 'entered' | 'progress' | 'exited')
+          : undefined;
+      if (!phase || !stage || !status) return turn;
+      const attempt = typeof p.attempt === 'number' ? p.attempt : undefined;
+      const reason = typeof p.reason === 'string' ? p.reason : undefined;
+      return {
+        ...turn,
+        currentStageDetail: { phase, stage, status, attempt, reason, at: event.ts },
+      };
+    }
     case 'agent:tool_started': {
       // Phase 2 UX: show a "running" tool card before execution completes.
       // Paired with `agent:tool_executed` via toolCallId.
@@ -735,20 +767,48 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
       const content = (result.content as string | undefined) ?? (result.answer as string | undefined) ?? turn.finalContent;
       const thinking = (result.thinking as string) ?? turn.thinking;
       const status = (result.status as string) ?? 'success';
+      // Map orchestrator TaskResult.status to UI turn status.
+      //  - 'input-required' → pause turn, surface clarifications
+      //  - 'failed' / 'escalated' → error state, preserve answer as
+      //    `error` so the chat bubble shows the orchestrator's
+      //    user-facing explanation (e.g. wall-clock timeout message)
+      //    instead of being silently marked 'done'.
+      //  - everything else (e.g. 'completed', 'success') → done.
+      const isFailureStatus = status === 'failed' || status === 'escalated';
+      const uiStatus: 'done' | 'input-required' | 'error' =
+        status === 'input-required' ? 'input-required' : isFailureStatus ? 'error' : 'done';
       return {
         ...turn,
-        status: status === 'input-required' ? 'input-required' : 'done',
+        status: uiStatus,
         finishedAt: event.ts,
-        finalContent: content,
+        finalContent: isFailureStatus ? turn.finalContent : content,
         thinking,
+        ...(isFailureStatus
+          ? { error: content ?? (result.escalationReason as string | undefined) ?? `Task ${status}` }
+          : {}),
       };
     }
     case 'task:timeout': {
+      // Backend (post-fix) emits `reason` plus structured diagnostics.
+      // For older payloads without `reason`, reconstruct a useful
+      // message from elapsedMs / budgetMs / stage data so the user
+      // never sees just "Task timed out".
+      const reason = p.reason as string | undefined;
+      const elapsedMs = typeof p.elapsedMs === 'number' ? (p.elapsedMs as number) : undefined;
+      const budgetMs = typeof p.budgetMs === 'number' ? (p.budgetMs as number) : undefined;
+      const stage = p.currentStage as { phase?: string; stage?: string } | undefined;
+      const lastTool = p.lastTool as { name?: string; status?: string } | undefined;
+      let message = reason ?? 'Task timed out';
+      if (!reason && elapsedMs !== undefined && budgetMs !== undefined) {
+        message = `Task timed out after ${Math.round(elapsedMs / 1000)}s (budget: ${Math.round(budgetMs / 1000)}s)`;
+        if (stage?.phase && stage?.stage) message += ` during ${stage.phase}:${stage.stage}`;
+        else if (lastTool?.name) message += ` while running ${lastTool.name}`;
+      }
       return {
         ...turn,
         status: 'error',
         finishedAt: event.ts,
-        error: (p.reason as string) ?? 'Task timed out',
+        error: message,
       };
     }
     case 'worker:error': {

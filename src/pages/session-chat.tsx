@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useState, useRef } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useSessionMessages, useSendMessage } from '@/hooks/use-chat';
 import { useStreamingTurn, useStreamingTurnStore } from '@/hooks/use-streaming-turn';
-import { useTasks } from '@/hooks/use-tasks';
+import { useTasks, useRetryTask } from '@/hooks/use-tasks';
 import {
   useArchiveSession,
   useCompactSession,
@@ -67,6 +67,7 @@ export default function SessionChat() {
   const unarchiveSession = useUnarchiveSession();
   const deleteSession = useDeleteSession();
   const compactSession = useCompactSession();
+  const retryTask = useRetryTask();
 
   const [editing, setEditing] = useState(false);
   const [confirm, setConfirm] = useState<ChatConfirmKind | null>(null);
@@ -152,7 +153,24 @@ export default function SessionChat() {
   };
 
   const handleRetry = () => {
-    if (!lastSent || sending) return;
+    if (sending) return;
+    // Prefer the parent-linked retry endpoint when we have a persisted
+    // task id — it inherits sessionId / goal / targetFiles / constraints
+    // from the timed-out parent and gets a generous 240s budget on the
+    // backend by default. Only fall back to re-sending the original text
+    // when no task id is available (very early failures, hot reload).
+    const taskId = turn?.taskId;
+    if (taskId) {
+      retryTask.mutate({
+        taskId,
+        reason: 'manual-retry-from-chat',
+        // Backend defaults to 240s already; pass through explicitly so the
+        // intent is visible in event logs.
+        maxDurationMs: 240_000,
+      });
+      return;
+    }
+    if (!lastSent) return;
     sendMessage.mutate(lastSent);
   };
 

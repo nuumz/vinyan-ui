@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useTasks, useSubmitTask, useCancelTask } from '@/hooks/use-tasks';
+import { useTasks, useSubmitTask, useCancelTask, useRetryTask } from '@/hooks/use-tasks';
 import { useApprovals, useResolveApproval } from '@/hooks/use-approvals';
 import { StatusBadge } from '@/components/ui/badge';
 import { PageHeader } from '@/components/ui/page-header';
@@ -33,6 +33,7 @@ export default function Tasks() {
   const pendingApprovals = approvalsQuery.data ?? [];
   const submitTask = useSubmitTask();
   const cancelTask = useCancelTask();
+  const retryTask = useRetryTask();
   const resolveApproval = useResolveApproval();
 
   const [showForm, setShowForm] = useState(false);
@@ -62,6 +63,23 @@ export default function Tasks() {
     const retryGoal = task.goal || task.result?.answer;
     if (!retryGoal?.trim()) return;
     try {
+      // Prefer the parent-linked retry endpoint so the new task inherits
+      // sessionId / goal / targetFiles / constraints from the timed-out
+      // parent. Falls back to a fresh submission only if the parent isn't
+      // tracked (e.g. async-only API tasks not persisted in sessions).
+      try {
+        await retryTask.mutateAsync({
+          taskId: task.taskId,
+          reason: 'manual-retry-from-tasks-page',
+          maxDurationMs: TIMEOUT_RETRY_BUDGET.maxDurationMs,
+        });
+        toast.success('Retry submitted with a 4m budget');
+        return;
+      } catch (err) {
+        // 404 → parent untracked → fall back to creating a fresh sibling.
+        const status = (err as { status?: number } | undefined)?.status;
+        if (status !== 404) throw err;
+      }
       await submitTask.mutateAsync({
         goal: retryGoal,
         taskType: task.result?.trace?.affectedFiles?.length ? 'code' : 'reasoning',

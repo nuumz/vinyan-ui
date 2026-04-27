@@ -846,6 +846,33 @@ export const api = {
     fetchJSON<{ taskId: string; status: string }>(`/tasks/${id}`, { method: 'DELETE' }),
 
   /**
+   * Manual retry for a failed/timed-out task. Preserves session, goal,
+   * targetFiles, and constraints from the parent. Defaults to a 240s
+   * budget on the backend; pass `body.maxDurationMs` or `body.budget`
+   * to override.
+   */
+  retryTask: (
+    id: string,
+    body?: {
+      reason?: string;
+      maxDurationMs?: number;
+      budget?: { maxTokens: number; maxDurationMs: number; maxRetries: number };
+      goal?: string;
+      constraints?: string[];
+    },
+  ) =>
+    fetchJSON<{
+      taskId: string;
+      parentTaskId: string;
+      sessionId?: string;
+      status: string;
+      budget: { maxTokens: number; maxDurationMs: number; maxRetries: number };
+    }>(`/tasks/${encodeURIComponent(id)}/retry`, {
+      method: 'POST',
+      body: JSON.stringify(body ?? {}),
+    }),
+
+  /**
    * Persisted bus-event log for a past task. Powers the historical Process
    * card in the chat: feeds the same `reduceTurn` reducer used live to
    * reconstruct the Phase / Tools / Oracles / Plan / Reasoning surfaces.
