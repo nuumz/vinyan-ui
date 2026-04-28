@@ -51,7 +51,12 @@ export function ProcessTimeline({ turn }: ProcessTimelineProps) {
   // without clicking; collapse once the timeline grows or the turn ends to
   // avoid dominating the bubble.
   const isRunning = turn.status === 'running';
-  const defaultOpen = isRunning && entries.length > 0 && entries.length <= 6;
+  // Don't auto-expand mid-run: when the timeline grows from 0 → N entries
+  // during streaming, an open <details> would shove the rest of the bubble
+  // down on every entry and the user perceives it as flickering. We only
+  // auto-open after the run settles AND only for short logs that fit
+  // without dominating the bubble.
+  const defaultOpen = !isRunning && entries.length > 0 && entries.length <= 6;
   const [open, setOpen] = useState(defaultOpen);
 
   if (entries.length === 0) return null;

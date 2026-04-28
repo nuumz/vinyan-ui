@@ -38,7 +38,7 @@ function CodeBlock({ className, children }: { className?: string; children?: Rea
       </button>
       <pre
         className={cn(
-          'bg-bg border border-border rounded-md p-3 pt-6 overflow-auto text-xs whitespace-pre',
+          'bg-bg border border-border rounded-md p-3 pt-6 overflow-auto text-xs whitespace-pre min-h-[2.25rem]',
         )}
       >
         <code className={className}>{children}</code>

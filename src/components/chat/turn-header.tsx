@@ -62,6 +62,22 @@ function deriveStatus(turn: StreamingTurn, elapsedMs: number): HeaderStatus {
     };
   }
   if (turn.status === 'done') {
+    // `partial` = orchestrator produced a usable answer but at least one
+    // sub-step failed or was skipped. Show as warning, NOT red error —
+    // dropping straight to "Failed" would contradict the visible answer.
+    if (turn.resultStatus === 'partial') {
+      const failedSteps = turn.planSteps.filter((s) => s.status === 'failed').length;
+      const skippedSteps = turn.planSteps.filter((s) => s.status === 'skipped').length;
+      const parts: string[] = [];
+      if (failedSteps > 0) parts.push(`${failedSteps} step${failedSteps === 1 ? '' : 's'} failed`);
+      if (skippedSteps > 0) parts.push(`${skippedSteps} skipped`);
+      return {
+        label: 'Done with warnings',
+        detail: parts.length > 0 ? parts.join(', ') : 'partial result',
+        Icon: TriangleAlert,
+        tone: 'text-yellow',
+      };
+    }
     return {
       label: 'Done',
       detail: turn.finalContent ? `${turn.finalContent.length.toLocaleString()} chars` : undefined,

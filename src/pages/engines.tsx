@@ -25,6 +25,15 @@ interface EngineStats {
   recent: Task[];
 }
 
+interface EngineDisplayStats {
+  tasks: number;
+  successPct: number | null;
+  avgQuality: number | null;
+  avgTokens: number | null;
+  avgDuration: number | null;
+  recent: Task[];
+}
+
 function emptyStats(): EngineStats {
   return {
     tasks: 0,
@@ -36,6 +45,58 @@ function emptyStats(): EngineStats {
     durationSum: 0,
     durationCount: 0,
     recent: [],
+  };
+}
+
+function addTaskStats(map: Map<string, EngineStats>, key: string, task: Task): void {
+  let stats = map.get(key);
+  if (!stats) {
+    stats = emptyStats();
+    map.set(key, stats);
+  }
+  stats.tasks += 1;
+  if (task.result?.status === 'completed') stats.successes += 1;
+  const quality = task.result?.qualityScore?.composite;
+  if (typeof quality === 'number') {
+    stats.qualitySum += quality;
+    stats.qualityCount += 1;
+  }
+  const tokens = task.result?.trace?.tokensConsumed;
+  if (typeof tokens === 'number') {
+    stats.tokensSum += tokens;
+    stats.tokensCount += 1;
+  }
+  const duration = task.result?.trace?.durationMs;
+  if (typeof duration === 'number') {
+    stats.durationSum += duration;
+    stats.durationCount += 1;
+  }
+  if (stats.recent.length < 10) stats.recent.push(task);
+}
+
+function displayStatsForEngine(engine: Worker, fallback: EngineStats): EngineDisplayStats {
+  // Prefer backend worker-store aggregates when they actually have data.
+  // Backend may return zero-stats payloads for engines whose traces are
+  // recorded under a legacy id alias — falling through to the task-list
+  // fallback keeps the table consistent with the drilldown's recent tasks.
+  if (engine.stats && engine.stats.totalTasks > 0) {
+    return {
+      tasks: engine.stats.totalTasks,
+      successPct: engine.stats.successRate * 100,
+      avgQuality: engine.stats.avgQualityScore,
+      avgTokens: engine.stats.avgTokenCost,
+      avgDuration: engine.stats.avgDurationMs,
+      recent: fallback.recent,
+    };
+  }
+
+  return {
+    tasks: fallback.tasks,
+    successPct: fallback.tasks > 0 ? (fallback.successes / fallback.tasks) * 100 : null,
+    avgQuality: fallback.qualityCount > 0 ? fallback.qualitySum / fallback.qualityCount : null,
+    avgTokens: fallback.tokensCount > 0 ? fallback.tokensSum / fallback.tokensCount : null,
+    avgDuration: fallback.durationCount > 0 ? fallback.durationSum / fallback.durationCount : null,
+    recent: fallback.recent,
   };
 }
 
@@ -54,35 +115,27 @@ export default function Engines() {
   const balancePct = Math.round((1 - Math.max(0, Math.min(1, gini))) * 100);
   const distinct = metrics?.workers.traceDiversity ?? 0;
 
-  // Per-engine KPIs aggregated by modelId from tasks
-  const statsByModel = useMemo(() => {
+  const statusCounts = useMemo(
+    () => ({
+      active: engines.filter((e) => e.status === 'active').length,
+      probation: engines.filter((e) => e.status === 'probation').length,
+      demoted: engines.filter((e) => e.status === 'demoted').length,
+      retired: engines.filter((e) => e.status === 'retired').length,
+    }),
+    [engines],
+  );
+
+  // Recent task preview fallback. Authoritative KPIs come from workerStore stats
+  // on each engine row; task list data is session-scoped and can be incomplete.
+  const taskStatsByKey = useMemo(() => {
     const map = new Map<string, EngineStats>();
     for (const t of tasks) {
+      const keys = new Set<string>();
+      const workerId = t.result?.trace?.workerId;
       const modelId = t.result?.trace?.modelUsed;
-      if (!modelId) continue;
-      let s = map.get(modelId);
-      if (!s) {
-        s = emptyStats();
-        map.set(modelId, s);
-      }
-      s.tasks += 1;
-      if (t.result?.status === 'completed') s.successes += 1;
-      const q = t.result?.qualityScore?.composite;
-      if (typeof q === 'number') {
-        s.qualitySum += q;
-        s.qualityCount += 1;
-      }
-      const tokens = t.result?.trace?.tokensConsumed;
-      if (typeof tokens === 'number') {
-        s.tokensSum += tokens;
-        s.tokensCount += 1;
-      }
-      const dur = t.result?.trace?.durationMs;
-      if (typeof dur === 'number') {
-        s.durationSum += dur;
-        s.durationCount += 1;
-      }
-      if (s.recent.length < 10) s.recent.push(t);
+      if (workerId) keys.add(workerId);
+      if (modelId) keys.add(modelId);
+      for (const key of keys) addTaskStats(map, key, t);
     }
     return map;
   }, [tasks]);
@@ -95,10 +148,11 @@ export default function Engines() {
   const handleRefresh = () => {
     workersQuery.refetch();
     tasksQuery.refetch();
+    metricsQuery.refetch();
   };
 
-  const loading = engines.length === 0 && metrics === null;
-  const isFetching = workersQuery.isFetching || tasksQuery.isFetching;
+  const loading = workersQuery.isLoading;
+  const isFetching = workersQuery.isFetching || tasksQuery.isFetching || metricsQuery.isFetching;
 
   return (
     <div className="space-y-4">
@@ -127,38 +181,38 @@ export default function Engines() {
         />
         <FilterStat
           title="Active"
-          value={metrics?.workers.active ?? 0}
+          value={statusCounts.active}
           valueColor="text-green"
           active={filter === 'active'}
           onClick={() => setFilter(filter === 'active' ? null : 'active')}
         />
         <FilterStat
           title="Probation"
-          value={metrics?.workers.probation ?? 0}
+          value={statusCounts.probation}
           valueColor="text-yellow"
           active={filter === 'probation'}
           onClick={() => setFilter(filter === 'probation' ? null : 'probation')}
         />
-        <div className="bg-surface rounded-lg border border-border p-4">
+        <div className="bg-surface rounded-lg border border-border p-4 h-full flex flex-col">
           <div className="text-xs text-text-dim uppercase tracking-wider mb-1">Fleet Balance</div>
           <BalanceGauge balancePct={balancePct} />
-          <div className="text-xs text-text-dim mt-1">
+          <div className="text-xs text-text-dim mt-auto pt-1">
             Gini {(gini * 100).toFixed(0)}% · {distinct} distinct in traces
           </div>
         </div>
       </div>
 
       {/* Secondary filter chips for Demoted/Retired (not shown as StatCards) */}
-      {(metrics?.workers.demoted ?? 0) + (metrics?.workers.retired ?? 0) > 0 && (
+      {statusCounts.demoted + statusCounts.retired > 0 && (
         <div className="flex items-center gap-2 text-xs">
           <span className="text-text-dim">More:</span>
           <FilterChip
-            label={`Demoted (${metrics?.workers.demoted ?? 0})`}
+            label={`Demoted (${statusCounts.demoted})`}
             active={filter === 'demoted'}
             onClick={() => setFilter(filter === 'demoted' ? null : 'demoted')}
           />
           <FilterChip
-            label={`Retired (${metrics?.workers.retired ?? 0})`}
+            label={`Retired (${statusCounts.retired})`}
             active={filter === 'retired'}
             onClick={() => setFilter(filter === 'retired' ? null : 'retired')}
           />
@@ -193,21 +247,14 @@ export default function Engines() {
               </thead>
               <tbody>
                 {visibleEngines.map((e) => {
-                  const s = statsByModel.get(e.config.modelId) ?? emptyStats();
-                  const successPct = s.tasks > 0 ? (s.successes / s.tasks) * 100 : null;
-                  const avgQuality = s.qualityCount > 0 ? s.qualitySum / s.qualityCount : null;
-                  const avgTokens = s.tokensCount > 0 ? s.tokensSum / s.tokensCount : null;
-                  const avgDuration = s.durationCount > 0 ? s.durationSum / s.durationCount : null;
+                  const fallbackStats = taskStatsByKey.get(e.id) ?? taskStatsByKey.get(e.config.modelId) ?? emptyStats();
+                  const stats = displayStatsForEngine(e, fallbackStats);
                   const isOpen = expanded === e.id;
                   return (
                     <Row
                       key={e.id}
                       engine={e}
-                      stats={s}
-                      successPct={successPct}
-                      avgQuality={avgQuality}
-                      avgTokens={avgTokens}
-                      avgDuration={avgDuration}
+                      stats={stats}
                       isOpen={isOpen}
                       onToggle={() => setExpanded(isOpen ? null : e.id)}
                     />
@@ -224,11 +271,7 @@ export default function Engines() {
 
 interface RowProps {
   engine: Worker;
-  stats: EngineStats;
-  successPct: number | null;
-  avgQuality: number | null;
-  avgTokens: number | null;
-  avgDuration: number | null;
+  stats: EngineDisplayStats;
   isOpen: boolean;
   onToggle: () => void;
 }
@@ -236,19 +279,15 @@ interface RowProps {
 function Row({
   engine: e,
   stats,
-  successPct,
-  avgQuality,
-  avgTokens,
-  avgDuration,
   isOpen,
   onToggle,
 }: RowProps) {
   const successColor =
-    successPct === null
+    stats.successPct === null
       ? 'text-text-dim'
-      : successPct >= 80
+      : stats.successPct >= 80
         ? 'text-green'
-        : successPct >= 50
+        : stats.successPct >= 50
           ? 'text-yellow'
           : 'text-red';
 
@@ -256,8 +295,8 @@ function Row({
     <>
       <tr
         className={cn(
-          'border-b border-border/50 hover:bg-white/[0.02] cursor-pointer transition-colors',
-          isOpen && 'bg-white/[0.02]',
+          'border-b border-border/50 hover:bg-white/2 cursor-pointer transition-colors',
+          isOpen && 'bg-white/2',
         )}
         onClick={onToggle}
       >
@@ -270,16 +309,16 @@ function Row({
         </td>
         <td className="px-4 py-2 tabular-nums text-right">{stats.tasks}</td>
         <td className={cn('px-4 py-2 tabular-nums text-right', successColor)}>
-          {successPct !== null ? `${successPct.toFixed(0)}%` : '—'}
+          {stats.successPct !== null ? `${stats.successPct.toFixed(0)}%` : '—'}
         </td>
         <td className="px-4 py-2 tabular-nums text-right text-text-dim">
-          {avgQuality !== null ? avgQuality.toFixed(2) : '—'}
+          {stats.avgQuality !== null ? stats.avgQuality.toFixed(2) : '—'}
         </td>
         <td className="px-4 py-2 tabular-nums text-right text-text-dim">
-          {avgTokens !== null ? Math.round(avgTokens).toLocaleString() : '—'}
+          {stats.avgTokens !== null ? Math.round(stats.avgTokens).toLocaleString() : '—'}
         </td>
         <td className="px-4 py-2 tabular-nums text-right text-text-dim">
-          {avgDuration !== null ? `${Math.round(avgDuration)}ms` : '—'}
+          {stats.avgDuration !== null ? `${Math.round(stats.avgDuration)}ms` : '—'}
         </td>
         <td className="px-4 py-2 tabular-nums text-right">{e.demotionCount}</td>
       </tr>
@@ -288,7 +327,7 @@ function Row({
   );
 }
 
-function DrilldownRow({ engine: e, stats }: { engine: Worker; stats: EngineStats }) {
+function DrilldownRow({ engine: e, stats }: { engine: Worker; stats: EngineDisplayStats }) {
   return (
     <tr>
       <td colSpan={9} className="px-4 py-3 bg-bg/50">
@@ -439,7 +478,7 @@ function FilterStat({ title, value, valueColor, active, onClick }: FilterStatPro
       type="button"
       onClick={onClick}
       className={cn(
-        'text-left transition-colors rounded-lg',
+        'text-left transition-colors rounded-lg h-full',
         active ? 'ring-1 ring-accent' : '',
       )}
     >

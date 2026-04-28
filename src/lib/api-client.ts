@@ -44,7 +44,7 @@ export interface Task {
 
 export interface TaskResult {
   id: string;
-  status: 'completed' | 'failed' | 'escalated' | 'uncertain' | 'input-required';
+  status: 'completed' | 'failed' | 'escalated' | 'uncertain' | 'input-required' | 'partial';
   mutations: Array<{
     file: string;
     diff: string;
@@ -59,6 +59,7 @@ export interface TaskResult {
     tokensConsumed: number;
     durationMs: number;
     modelUsed?: string;
+    workerId?: string | null;
     affectedFiles: string[];
     oracleVerdicts: Record<string, OracleVerdict>;
     qualityScore?: QualityScore;
@@ -90,6 +91,25 @@ export interface Worker {
   status: 'active' | 'probation' | 'demoted' | 'retired';
   createdAt: number;
   demotionCount: number;
+  stats?: EngineStats;
+}
+
+export interface EngineStats {
+  totalTasks: number;
+  successRate: number;
+  avgQualityScore: number;
+  avgDurationMs: number;
+  avgTokenCost: number;
+  taskTypeBreakdown: Record<
+    string,
+    {
+      count: number;
+      successRate: number;
+      avgQuality: number;
+      avgTokens: number;
+    }
+  >;
+  lastActiveAt: number;
 }
 
 export interface AgentRoutingHints {

@@ -33,6 +33,9 @@ const statusVariantMap: Record<string, BadgeVariant> = {
   probation: 'warning',
   escalated: 'warning',
   uncertain: 'warning',
+  // `partial` = task produced a usable answer but at least one sub-step
+  // failed or was skipped. Render as warning, NOT red error.
+  partial: 'warning',
   suspended: 'neutral',
   failed: 'error',
   demoted: 'error',

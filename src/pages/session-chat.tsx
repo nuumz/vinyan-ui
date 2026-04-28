@@ -133,9 +133,26 @@ export default function SessionChat() {
   const streamingContentLength =
     (turn?.finalContent.length ?? 0) +
     Object.values(turn?.stepOutputs ?? {}).reduce((acc, v) => acc + v.length, 0);
+
+  // Smooth-scroll on lifecycle transitions (new message, send, status flip)
+  // — these are infrequent and benefit from animation.
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, sending, turn?.toolCalls.length, streamingContentLength, turn?.status]);
+  }, [messages.length, sending, turn?.toolCalls.length, turn?.status]);
+
+  // Per-delta auto-scroll during streaming uses `behavior: 'auto'` and is
+  // throttled to one scroll per animation frame. The previous code fired a
+  // smooth-scroll on every character delta which produced visible flicker
+  // and layout jank as the browser re-ran the animation mid-flight.
+  useEffect(() => {
+    if (turn?.status !== 'running') return;
+    if (streamingContentLength === 0) return;
+    let raf = 0;
+    raf = requestAnimationFrame(() => {
+      bottomRef.current?.scrollIntoView({ behavior: 'auto' });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [streamingContentLength, turn?.status]);
 
   useLayoutEffect(() => {
     const el = textareaRef.current;
@@ -174,7 +191,13 @@ export default function SessionChat() {
     sendMessage.mutate(lastSent);
   };
 
-  const showStreaming = !!turn && turn.status !== 'idle';
+  const persistedTurnMessage =
+    !!turn?.taskId && messages.some((msg) => msg.role === 'assistant' && msg.taskId === turn.taskId);
+
+  const showStreaming =
+    !!turn &&
+    turn.status !== 'idle' &&
+    (turn.status === 'running' || turn.status === 'awaiting-approval' || !persistedTurnMessage);
 
   return (
     <div className="absolute inset-0 flex flex-col bg-bg">

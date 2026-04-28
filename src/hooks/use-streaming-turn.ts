@@ -200,6 +200,13 @@ export interface StreamingTurn {
   pendingApproval?: PendingApproval;
   /** Internal stream bookkeeping used to de-dupe legacy/rich text events. */
   stream?: StreamState;
+  /**
+   * Raw orchestrator `TaskResult.status` captured on `task:complete`. Lets
+   * the chat header distinguish `partial` (usable answer + at least one
+   * sub-step failed/skipped) from clean `completed`. UI renders partial as
+   * a warning, NOT as red error.
+   */
+  resultStatus?: 'completed' | 'failed' | 'escalated' | 'uncertain' | 'input-required' | 'partial';
   error?: string;
 }
 
@@ -783,6 +790,7 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
         finishedAt: event.ts,
         finalContent: isFailureStatus ? turn.finalContent : content,
         thinking,
+        resultStatus: status as StreamingTurn['resultStatus'],
         ...(isFailureStatus
           ? { error: content ?? (result.escalationReason as string | undefined) ?? `Task ${status}` }
           : {}),

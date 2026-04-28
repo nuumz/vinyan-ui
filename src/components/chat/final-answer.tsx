@@ -1,4 +1,5 @@
 import type { StreamingTurn } from '@/hooks/use-streaming-turn';
+import { cn } from '@/lib/utils';
 import { Markdown } from './markdown';
 
 interface FinalAnswerProps {
@@ -21,9 +22,16 @@ export function FinalAnswer({ turn }: FinalAnswerProps) {
     <div className="rounded-md border border-border bg-surface-2/40 px-3.5 py-2.5">
       <div className="text-text">
         <Markdown content={turn.finalContent} />
-        {isStreaming && (
-          <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-accent align-middle" />
-        )}
+        {/* Caret slot is always rendered to reserve inline width — only its
+            visibility flips when streaming ends, so the surrounding text does
+            not reflow on completion. */}
+        <span
+          aria-hidden="true"
+          className={cn(
+            'ml-0.5 inline-block h-3.5 w-1.5 align-middle bg-accent',
+            isStreaming ? 'animate-pulse opacity-100' : 'opacity-0',
+          )}
+        />
       </div>
     </div>
   );
