@@ -19,7 +19,12 @@ export function useSessionMessages(sessionId: string | null) {
     // shape `messages: ConversationEntry[]` is already the most recent N.
     queryFn: () => api.getMessages(sessionId!, 200),
     enabled: !!sessionId,
-    staleTime: Infinity,
+    // Was Infinity — never refetched on session-switch / window-refocus.
+    // Result: navigating to another session and back showed a stale history
+    // (any message the user just sent in that window was missing). 30s lets
+    // background refresh catch up while still avoiding a refetch on every
+    // intra-session re-render. SSE invalidation handles the live case.
+    staleTime: 30_000,
   });
 }
 
@@ -80,7 +85,13 @@ export function useSendMessage(sessionId: string | null) {
       const sid = sessionId;
       qc.invalidateQueries({ queryKey: qk.sessionMessages(sid) });
       qc.invalidateQueries({ queryKey: qk.sessions });
-      setTimeout(() => clearTurn(sid), 400);
+      // The bubble is cleared by `session-chat.tsx` once the persisted
+      // assistant message arrives in `visibleMessages` (see the "clear
+      // when persisted" useEffect). Tying clear to a fixed 400ms timer
+      // here caused a visible gap where the bubble disappeared before
+      // the refetch returned the historical message, especially for fast
+      // conversational tasks (<1s) — the user saw the user-bubble alone
+      // and assumed nothing happened.
     },
     onError: (err: Error, _content: string, ctx: SendContext | undefined) => {
       if (sessionId && ctx?.previous !== undefined) {

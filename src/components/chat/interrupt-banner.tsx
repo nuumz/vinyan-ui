@@ -34,8 +34,11 @@ export function InterruptBanner({ turn, sessionId, onRetry }: InterruptBannerPro
           <HelpCircle size={14} /> Clarification needed
         </div>
         <ul className="list-disc list-inside text-sm text-text space-y-1">
-          {turn.clarifications.map((q) => (
-            <li key={q}>{q}</li>
+          {turn.clarifications.map((q, idx) => (
+            // Index key — clarifications can repeat verbatim across re-asks,
+            // and a duplicate string key would make React reuse the wrong
+            // <li>, breaking measure/animation on the second occurrence.
+            <li key={`${idx}-${q}`}>{q}</li>
           ))}
         </ul>
         <div className="text-xs text-text-dim">Type your answer below to continue.</div>

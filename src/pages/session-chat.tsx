@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState, useRef } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useState, useRef } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useSessionMessages, useSendMessage } from '@/hooks/use-chat';
 import { useStreamingTurn, useStreamingTurnStore } from '@/hooks/use-streaming-turn';
@@ -73,6 +73,24 @@ export default function SessionChat() {
   const [confirm, setConfirm] = useState<ChatConfirmKind | null>(null);
 
   const messages = messagesQuery.data?.messages ?? [];
+  const visibleMessages = useMemo(() => {
+    const deduped: typeof messages = [];
+    const assistantTaskIndex = new Map<string, number>();
+
+    for (const msg of messages) {
+      if (msg.role === 'assistant' && msg.taskId) {
+        const existingIndex = assistantTaskIndex.get(msg.taskId);
+        if (existingIndex !== undefined) {
+          deduped[existingIndex] = msg;
+          continue;
+        }
+        assistantTaskIndex.set(msg.taskId, deduped.length);
+      }
+      deduped.push(msg);
+    }
+
+    return deduped;
+  }, [messages]);
   const pendingClarifications = messagesQuery.data?.session?.pendingClarifications ?? [];
   // Treat the input as busy whenever a turn is still in flight — running OR
   // paused at the workflow approval gate. A fresh mount after navigating
@@ -109,7 +127,24 @@ export default function SessionChat() {
       hydrateRunningTask(sessionId, runningTask.taskId);
       return;
     }
-    if (tasksQuery.isSuccess && turn?.status === 'running' && turn.recovered) {
+    // Drop the recovered turn ONLY if the task it points to is conclusively
+    // gone — i.e. tasksQuery has refreshed AND the turn's taskId appears
+    // there with a non-running status. The previous condition fired whenever
+    // tasksQuery had no running task for this session, which raced against
+    // ingestGlobal: a cross-source task:start would create a recovered turn,
+    // tasksQuery hadn't refetched yet, and we'd wipe the freshly-created
+    // bubble before the user even saw the in-progress indicator. The fix
+    // is to require evidence that the task is actually done, not merely
+    // absent from the (possibly-stale) tasks snapshot.
+    if (
+      tasksQuery.isSuccess &&
+      turn?.status === 'running' &&
+      turn.recovered &&
+      turn.taskId &&
+      tasksQuery.data?.some(
+        (task) => task.taskId === turn.taskId && task.status !== 'running',
+      )
+    ) {
       dropRecoveredTurn(sessionId);
       messagesQuery.refetch();
     }
@@ -138,7 +173,7 @@ export default function SessionChat() {
   // — these are infrequent and benefit from animation.
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages.length, sending, turn?.toolCalls.length, turn?.status]);
+  }, [visibleMessages.length, sending, turn?.toolCalls.length, turn?.status]);
 
   // Per-delta auto-scroll during streaming uses `behavior: 'auto'` and is
   // throttled to one scroll per animation frame. The previous code fired a
@@ -192,12 +227,26 @@ export default function SessionChat() {
   };
 
   const persistedTurnMessage =
-    !!turn?.taskId && messages.some((msg) => msg.role === 'assistant' && msg.taskId === turn.taskId);
+    !!turn?.taskId && visibleMessages.some((msg) => msg.role === 'assistant' && msg.taskId === turn.taskId);
 
   const showStreaming =
     !!turn &&
     turn.status !== 'idle' &&
     (turn.status === 'running' || turn.status === 'awaiting-approval' || !persistedTurnMessage);
+
+  // Clear the streaming bubble exactly when the persisted assistant message
+  // arrives in `visibleMessages` — not on a fixed timer. Tying the clear to
+  // the historical refetch landing eliminates the gap where the bubble
+  // disappears before the message-list refresh returns: for fast tasks
+  // (<1s conversational shortcircuit) the user previously saw the user
+  // bubble alone with no agent response, even though the answer was
+  // already saved server-side.
+  useEffect(() => {
+    if (!sessionId || !turn) return;
+    if (turn.status !== 'done' && turn.status !== 'input-required') return;
+    if (!persistedTurnMessage) return;
+    clearTurn(sessionId);
+  }, [sessionId, turn, persistedTurnMessage, clearTurn]);
 
   return (
     <div className="absolute inset-0 flex flex-col bg-bg">
@@ -220,13 +269,27 @@ export default function SessionChat() {
       />
 
       <div className="flex-1 overflow-auto px-4 py-4 space-y-4">
-        {messages.length === 0 && !showStreaming && (
-          <div className="text-text-dim text-sm text-center py-12">
-            Send a message to start the conversation
+        {visibleMessages.length === 0 && !showStreaming && (
+          <div className="text-text-dim text-sm text-center py-12 space-y-2">
+            {session?.source === 'api' && (session?.taskCount ?? 0) > 0 ? (
+              <>
+                <div>This session was auto-created by the async-task API.</div>
+                <div className="text-xs">
+                  It holds {session.taskCount} task{session.taskCount === 1 ? '' : 's'} but no chat
+                  turns — view them on the{' '}
+                  <a href="/tasks" className="text-accent hover:underline">
+                    Tasks page
+                  </a>
+                  .
+                </div>
+              </>
+            ) : (
+              <div>Send a message to start the conversation</div>
+            )}
           </div>
         )}
 
-        {messages.map((msg) => (
+        {visibleMessages.map((msg) => (
           <MessageBubble key={`${msg.role}-${msg.timestamp}-${msg.taskId}`} message={msg} />
         ))}
 

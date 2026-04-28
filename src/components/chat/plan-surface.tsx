@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import {
   Check,
   ChevronRight,
@@ -159,7 +159,7 @@ function StepRow({ step, index, tools, output, defaultOpen, isStreaming }: StepR
  * the currently-running step. Tools without a step (ad-hoc / non-workflow)
  * render in an "Other" group at the bottom.
  */
-export function PlanSurface({ turn }: PlanSurfaceProps) {
+function PlanSurfaceImpl({ turn }: PlanSurfaceProps) {
   const hasPlan = turn.planSteps.length >= 2;
   const orphanTools = turn.toolCalls.filter((t) => !t.planStepId);
 
@@ -230,3 +230,20 @@ export function PlanSurface({ turn }: PlanSurfaceProps) {
     </div>
   );
 }
+
+/**
+ * Memoized — the parent re-renders on every SSE event. PlanSurface only
+ * reads four slices (planSteps, toolCalls, stepOutputs, status); the
+ * reducer preserves their references when the event doesn't touch them
+ * (e.g. an `agent:turn_complete` only mutates `tokensConsumed`). A
+ * slice-only comparator avoids re-rendering the whole plan + every nested
+ * ToolCallCard on each token-level delta.
+ */
+export const PlanSurface = memo(
+  PlanSurfaceImpl,
+  (prev, next) =>
+    prev.turn.planSteps === next.turn.planSteps &&
+    prev.turn.toolCalls === next.turn.toolCalls &&
+    prev.turn.stepOutputs === next.turn.stepOutputs &&
+    prev.turn.status === next.turn.status,
+);

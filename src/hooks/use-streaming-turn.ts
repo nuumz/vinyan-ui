@@ -89,8 +89,17 @@ export interface ProcessLogEntry {
 /** FIFO cap to keep `processLog` bounded on long agentic loops. */
 const PROCESS_LOG_MAX = 50;
 
+/**
+ * Monotonic counter that disambiguates `${kind}-${ts}` ids when two events
+ * of the same kind land in the same millisecond. Without this, React-keyed
+ * lists collapse the second entry and the timeline silently drops events.
+ */
+let processLogSeq = 0;
+
 function appendProcessLog(turn: StreamingTurn, entry: ProcessLogEntry): StreamingTurn {
-  const next = [...turn.processLog, entry];
+  processLogSeq += 1;
+  const uniqueEntry: ProcessLogEntry = { ...entry, id: `${entry.id}-${processLogSeq}` };
+  const next = [...turn.processLog, uniqueEntry];
   return {
     ...turn,
     processLog: next.length > PROCESS_LOG_MAX ? next.slice(next.length - PROCESS_LOG_MAX) : next,
@@ -504,12 +513,18 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
       const id = (input.id as string) ?? turn.taskId;
       const level = typeof routing.level === 'number' ? (routing.level as number) : undefined;
       const model = typeof routing.model === 'string' ? (routing.model as string) : undefined;
+      // Upsert: backend may emit `task:start` twice — once preliminary at
+      // executeTaskCore entry (model='pending', level=0), then again from
+      // the full-pipeline branch with the real routing decision. Take the
+      // later real model over the earlier sentinel.
+      const isPlaceholderModel = model === 'pending' || model === 'unknown';
+      const nextEngineId = !isPlaceholderModel && model ? model : turn.engineId ?? model;
       return {
         ...turn,
         taskId: id,
-        startedAt: event.ts || turn.startedAt,
+        startedAt: turn.startedAt || event.ts,
         routingLevel: level ?? turn.routingLevel,
-        engineId: turn.engineId ?? model,
+        engineId: nextEngineId,
       };
     }
     case 'phase:timing': {
@@ -771,6 +786,7 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
     }
     case 'task:complete': {
       const result = (p.result as Record<string, unknown> | undefined) ?? {};
+      const taskId = (result.id as string | undefined) ?? turn.taskId;
       const content = (result.content as string | undefined) ?? (result.answer as string | undefined) ?? turn.finalContent;
       const thinking = (result.thinking as string) ?? turn.thinking;
       const status = (result.status as string) ?? 'success';
@@ -786,11 +802,16 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
         status === 'input-required' ? 'input-required' : isFailureStatus ? 'error' : 'done';
       return {
         ...turn,
+        taskId,
         status: uiStatus,
         finishedAt: event.ts,
         finalContent: isFailureStatus ? turn.finalContent : content,
         thinking,
         resultStatus: status as StreamingTurn['resultStatus'],
+        // Terminal — drop any unresolved approval card so the bubble can't
+        // show "Approve / Reject" alongside the final answer if the
+        // orchestrator races past the gate (e.g. auto-approve timeout).
+        pendingApproval: undefined,
         ...(isFailureStatus
           ? { error: content ?? (result.escalationReason as string | undefined) ?? `Task ${status}` }
           : {}),
@@ -817,6 +838,7 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
         status: 'error',
         finishedAt: event.ts,
         error: message,
+        pendingApproval: undefined,
       };
     }
     case 'worker:error': {
@@ -825,6 +847,7 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
         status: 'error',
         finishedAt: event.ts,
         error: (p.error as string) ?? 'Worker error',
+        pendingApproval: undefined,
       };
     }
     case 'workflow:plan_ready': {

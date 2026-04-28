@@ -8,6 +8,7 @@ import {
   Layers,
   Hash,
   ShieldCheck,
+  User,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { ConversationEntry } from '@/lib/api-client';
@@ -130,6 +131,19 @@ export function MessageBubble({ message }: { message: ConversationEntry }) {
               />
               {trace.outcome}
             </span>
+            {trace.workerId && (
+              // Surface the agent / worker that answered. Without this chip
+              // the user cannot tell whether `developer`, `assistant`, or a
+              // synthesized specialist responded — they'd have to dig into
+              // the trace. Highest-priority chip after outcome.
+              <span
+                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-accent/10 text-accent border border-accent/25 font-medium"
+                title="Agent"
+              >
+                <User size={10} />
+                {trace.workerId}
+              </span>
+            )}
             <span
               className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-bg/50 text-text-dim border border-border/70"
               title="Model"

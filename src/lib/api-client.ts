@@ -270,6 +270,18 @@ export interface MCPReport {
   tools?: MCPToolEntry[];
 }
 
+/** Single dominant lifecycle label, derived server-side from status + archived/deleted timestamps. */
+export type SessionLifecycleState =
+  | 'active'
+  | 'suspended'
+  | 'compacted'
+  | 'closed'
+  | 'archived'
+  | 'trashed';
+
+/** What the session is doing right now — derived from running-task count. */
+export type SessionActivityState = 'in-progress' | 'idle' | 'empty';
+
 export interface Session {
   id: string;
   source: string;
@@ -277,10 +289,21 @@ export interface Session {
   createdAt: number;
   updatedAt: number;
   taskCount: number;
+  /** Subset of taskCount — tasks in `pending` or `running` state. */
+  runningTaskCount: number;
   title: string | null;
   description: string | null;
   archivedAt: number | null;
   deletedAt: number | null;
+  /**
+   * Single dominant lifecycle label. Prefer this over `status` +
+   * archivedAt/deletedAt arithmetic in render code — backend already does
+   * the priority resolution (trashed > archived > compacted > suspended >
+   * active) so the UI just renders a single chip.
+   */
+  lifecycleState: SessionLifecycleState;
+  /** What the session is doing right now (drives "X running" indicators). */
+  activityState: SessionActivityState;
 }
 
 export type SessionListState = 'active' | 'archived' | 'deleted' | 'all';
@@ -614,6 +637,8 @@ export interface ConversationEntry {
     approach?: string;
     oracleVerdictCount: number;
     affectedFiles: string[];
+    /** Worker / agent that ran the turn (e.g. `'developer'`). */
+    workerId?: string;
   };
   tokenEstimate: number;
 }

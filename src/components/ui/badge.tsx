@@ -40,6 +40,13 @@ const statusVariantMap: Record<string, BadgeVariant> = {
   failed: 'error',
   demoted: 'error',
   retired: 'neutral',
+  // Session lifecycleState extras (server-derived priority-resolved labels):
+  // `archived` = soft-hidden, can be restored; `trashed` = pending hard delete;
+  // `compacted` = history compressed but still active; `closed` = ended.
+  archived: 'neutral',
+  trashed: 'error',
+  compacted: 'info',
+  closed: 'neutral',
 };
 
 export function StatusBadge({ status }: { status: string }) {

@@ -47,8 +47,14 @@ export function useSSESync({ enabled }: UseSSESyncOptions) {
           queryClient.invalidateQueries({ queryKey: qk.sessionMessages(turnUpdate.sessionId) });
           queryClient.invalidateQueries({ queryKey: qk.sessions });
         }
-        if (turnUpdate && (turnUpdate.status === 'done' || turnUpdate.status === 'error')) {
-          window.setTimeout(() => clearTurn(turnUpdate.sessionId), 800);
+        // Bubble teardown is owned by `session-chat.tsx`'s "clear when the
+        // persisted assistant message arrives" effect — it ties the clear
+        // to the historical refetch landing, eliminating the visible gap
+        // a fixed 800ms timer creates for fast tasks. We DO still need a
+        // safety net for cross-source error states where the session page
+        // may not be mounted: clear those after a longer grace period.
+        if (turnUpdate && turnUpdate.status === 'error') {
+          window.setTimeout(() => clearTurn(turnUpdate.sessionId), 4000);
         }
       }
       if (name === 'worker:dispatch' || name === 'worker:complete' || name === 'worker:error') {

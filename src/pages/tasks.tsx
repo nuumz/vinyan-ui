@@ -263,9 +263,15 @@ export default function Tasks() {
                           className="px-2 py-0.5 text-xs rounded bg-red/20 text-red border border-red/30 hover:bg-red/30 transition-colors opacity-0 group-hover:opacity-100"
                           onClick={(e) => {
                             e.stopPropagation();
-                            cancelTask.mutate(t.taskId);
-                            toast.info('Task cancelled');
+                            // Show the toast only after the backend confirms the
+                            // cancel — otherwise a 404 (task already finished)
+                            // still surfaces "Task cancelled", contradicting the
+                            // error toast that the mutation's onError raises.
+                            cancelTask.mutate(t.taskId, {
+                              onSuccess: () => toast.info('Task cancelled'),
+                            });
                           }}
+                          disabled={cancelTask.isPending}
                         >
                           Cancel
                         </button>
@@ -289,7 +295,11 @@ export default function Tasks() {
                                 type="button"
                                 className="shrink-0 rounded px-2 py-1 bg-accent/15 text-accent hover:bg-accent/25 transition-colors disabled:opacity-50"
                                 onClick={() => handleRetryTimeout(t)}
-                                disabled={submitTask.isPending}
+                                disabled={
+                                  submitTask.isPending ||
+                                  retryTask.isPending ||
+                                  t.status === 'running'
+                                }
                               >
                                 Retry 4m
                               </button>

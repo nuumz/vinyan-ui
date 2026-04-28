@@ -9,7 +9,7 @@
  * `use-streaming-turn.ts` from typed bus payloads. Never derived from LLM
  * output (no-llm-output-postfilter rule).
  */
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import {
   ChevronRight,
   Sparkles,
@@ -45,7 +45,7 @@ const COLOR_BY_STATUS: Record<ProcessLogEntry['status'], string> = {
   error: 'text-red',
 };
 
-export function ProcessTimeline({ turn }: ProcessTimelineProps) {
+function ProcessTimelineImpl({ turn }: ProcessTimelineProps) {
   const entries = turn.processLog;
   // Default expanded for short, in-flight runs so the user sees activity
   // without clicking; collapse once the timeline grows or the turn ends to
@@ -101,3 +101,17 @@ export function ProcessTimeline({ turn }: ProcessTimelineProps) {
     </div>
   );
 }
+
+/**
+ * Memoized — the parent re-renders on every SSE event (new `turn` ref),
+ * but this component only reads `processLog` and `status`. The reducer
+ * preserves `processLog` reference across events that don't touch it,
+ * so a slice-only comparator skips ~95% of re-renders during a busy
+ * agentic loop with 50+ tool calls.
+ */
+export const ProcessTimeline = memo(
+  ProcessTimelineImpl,
+  (prev, next) =>
+    prev.turn.processLog === next.turn.processLog &&
+    prev.turn.status === next.turn.status,
+);

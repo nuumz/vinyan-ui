@@ -430,14 +430,34 @@ function SessionRow({
       </td>
       <td className="px-4 py-2">
         <div className="flex flex-col gap-1 items-start">
-          <StatusBadge status={session.status} />
-          {isArchived && !isDeleted && (
-            <span className="text-[10px] text-text-dim">archived</span>
+          {/*
+            Backend derives `lifecycleState` (priority-resolved single label
+            including archived/trashed). Render that directly instead of
+            stacking raw `status` + ad-hoc text below — clearer and keeps
+            visual contract owned by one place.
+          */}
+          <StatusBadge status={session.lifecycleState} />
+          {session.activityState === 'in-progress' && (
+            <span className="inline-flex items-center gap-1 text-[10px] text-accent">
+              <span className="h-1.5 w-1.5 rounded-full bg-accent animate-pulse" />
+              in-progress
+            </span>
           )}
-          {isDeleted && <span className="text-[10px] text-red">trashed</span>}
         </div>
       </td>
-      <td className="px-4 py-2 tabular-nums text-right">{session.taskCount}</td>
+      <td className="px-4 py-2 tabular-nums text-right">
+        <div className="inline-flex items-baseline gap-1">
+          <span>{session.taskCount}</span>
+          {session.runningTaskCount > 0 && (
+            <span
+              className="text-[10px] text-accent"
+              title={`${session.runningTaskCount} task${session.runningTaskCount === 1 ? '' : 's'} pending or running`}
+            >
+              ({session.runningTaskCount})
+            </span>
+          )}
+        </div>
+      </td>
       <td
         className="px-4 py-2 text-xs text-text-dim"
         title={new Date(session.updatedAt).toLocaleString()}
