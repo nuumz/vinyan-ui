@@ -3,6 +3,7 @@ import { AgentTimelineCard } from './agent-timeline-card';
 import { DiagnosticsDrawer } from './diagnostics-drawer';
 import { FinalAnswer } from './final-answer';
 import { InterruptBanner } from './interrupt-banner';
+import { PartialDecisionCard } from './partial-decision-card';
 import { PlanSurface } from './plan-surface';
 import { ProcessTimeline } from './process-timeline';
 import { TurnHeader } from './turn-header';
@@ -36,9 +37,17 @@ export function StreamingBubble({ turn, sessionId, nowMs, onRetry }: StreamingBu
       <div className="max-w-[88%] w-full bg-surface border border-border rounded-lg px-4 py-3 text-sm flex flex-col gap-3">
         <TurnHeader turn={turn} nowMs={nowMs} />
         <InterruptBanner turn={turn} sessionId={sessionId} onRetry={onRetry} />
+        {turn.pendingPartialDecision && (
+          <PartialDecisionCard
+            sessionId={sessionId}
+            pending={turn.pendingPartialDecision}
+            planSteps={turn.planSteps}
+            nowMs={nowMs}
+          />
+        )}
         <AgentTimelineCard
           steps={turn.planSteps}
-          stepOutputs={turn.stepOutputs}
+          toolCalls={turn.toolCalls}
           isLive={turn.status === 'running'}
         />
         <PlanSurface turn={turn} />

@@ -95,3 +95,41 @@ export function useProvideWorkflowHumanInput() {
     },
   });
 }
+
+interface PartialFailureDecisionArgs {
+  sessionId: string;
+  taskId: string;
+  decision: 'continue' | 'abort';
+  rationale?: string;
+}
+
+interface PartialFailureDecisionResult {
+  taskId: string;
+  sessionId: string;
+  decision: 'continue' | 'abort';
+  status: 'recorded';
+}
+
+/**
+ * Resolve the runtime partial-failure decision gate. Fired by the backend
+ * (`workflow:partial_failure_decision_needed`) after a multi-agent workflow
+ * completes execution but at least one delegate-sub-agent step failed AND
+ * its cascade caused a dependent step to skip — i.e. the planned work can
+ * no longer be delivered as the user intended. The user picks `'continue'`
+ * (ship the deterministic aggregation of survivors as `partial`) or
+ * `'abort'` (fail the task with rationale). The streaming reducer clears
+ * `pendingPartialDecision` when the matching `_provided` event lands.
+ */
+export function useProvidePartialFailureDecision() {
+  return useMutation<PartialFailureDecisionResult, Error, PartialFailureDecisionArgs>({
+    mutationFn: (args) =>
+      api.providePartialFailureDecision(args.sessionId, {
+        taskId: args.taskId,
+        decision: args.decision,
+        rationale: args.rationale,
+      }),
+    onError: (err) => {
+      toast.apiError(err, { fallback: 'Failed to send your decision' });
+    },
+  });
+}

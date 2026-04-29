@@ -159,17 +159,31 @@ export default function Tasks() {
       {/* Pending approvals */}
       {pendingApprovals.length > 0 && (
         <div className="space-y-2">
-          {pendingApprovals.map((taskId) => (
-            <div key={taskId} className="bg-yellow/5 border border-yellow/20 rounded-lg px-4 py-3 flex items-center gap-3">
+          {pendingApprovals.map((approval) => (
+            <div
+              key={approval.taskId}
+              className="bg-yellow/5 border border-yellow/20 rounded-lg px-4 py-3 flex items-center gap-3"
+            >
               <ShieldAlert size={16} className="text-yellow shrink-0" />
-              <div className="flex-1 text-sm">
-                <span className="text-yellow font-medium">Approval required</span>
-                <span className="text-text-dim ml-2 font-mono text-xs">{taskId}</span>
+              <div className="flex-1 text-sm min-w-0">
+                <div className="flex items-baseline gap-2">
+                  <span className="text-yellow font-medium">Approval required</span>
+                  <span
+                    className="text-text-dim font-mono text-xs truncate"
+                    title={approval.taskId}
+                  >
+                    {approval.taskId}
+                  </span>
+                </div>
+                <div className="text-xs text-text-dim truncate" title={approval.reason}>
+                  {approval.reason}
+                  <span className="ml-2 font-mono">risk {approval.riskScore.toFixed(2)}</span>
+                </div>
               </div>
               <button
                 type="button"
                 className="px-3 py-1 text-xs rounded bg-green/20 text-green border border-green/30 hover:bg-green/30 transition-colors"
-                onClick={() => resolveApproval.mutate({ taskId, decision: 'approved' })}
+                onClick={() => resolveApproval.mutate({ taskId: approval.taskId, decision: 'approved' })}
                 disabled={resolveApproval.isPending}
               >
                 Approve
@@ -177,7 +191,7 @@ export default function Tasks() {
               <button
                 type="button"
                 className="px-3 py-1 text-xs rounded bg-red/20 text-red border border-red/30 hover:bg-red/30 transition-colors"
-                onClick={() => resolveApproval.mutate({ taskId, decision: 'rejected' })}
+                onClick={() => resolveApproval.mutate({ taskId: approval.taskId, decision: 'rejected' })}
                 disabled={resolveApproval.isPending}
               >
                 Reject

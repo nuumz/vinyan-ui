@@ -42,6 +42,13 @@ export interface Task {
   result?: TaskResult;
 }
 
+export interface PendingApproval {
+  taskId: string;
+  riskScore: number;
+  reason: string;
+  requestedAt: number;
+}
+
 export interface TaskResult {
   id: string;
   status: 'completed' | 'failed' | 'escalated' | 'uncertain' | 'input-required' | 'partial';
@@ -1079,7 +1086,7 @@ export const api = {
   },
 
   // Approval (A6)
-  getPendingApprovals: () => fetchJSON<{ pending: string[] }>('/approvals'),
+  getPendingApprovals: () => fetchJSON<{ pending: PendingApproval[] }>('/approvals'),
   approveTask: (taskId: string, decision: 'approved' | 'rejected') =>
     fetchJSON<{ taskId: string; decision: string }>(`/tasks/${taskId}/approval`, {
       method: 'POST',
@@ -1166,6 +1173,29 @@ export const api = {
       sessionId: string;
       status: 'recorded';
     }>(`/sessions/${sessionId}/workflow/human-input`, {
+      method: 'POST',
+      body: JSON.stringify(args),
+    }),
+
+  /**
+   * Workflow paused on a partial-failure decision gate — fires after a
+   * `delegate-sub-agent` step failed AND its cascade caused a dependent
+   * step to skip. The user picks `'continue'` (ship the deterministic
+   * aggregation of survivors as `partial`) or `'abort'` (fail the task
+   * with rationale). Backend emits `workflow:partial_failure_decision_provided`,
+   * which resolves the executor's wait. Timeout default is 3 min — if no
+   * decision arrives the executor self-aborts with `auto: true`.
+   */
+  providePartialFailureDecision: (
+    sessionId: string,
+    args: { taskId: string; decision: 'continue' | 'abort'; rationale?: string },
+  ) =>
+    fetchJSON<{
+      taskId: string;
+      sessionId: string;
+      decision: 'continue' | 'abort';
+      status: 'recorded';
+    }>(`/sessions/${sessionId}/workflow/partial-decision`, {
       method: 'POST',
       body: JSON.stringify(args),
     }),

@@ -130,6 +130,37 @@ export interface PendingHumanInput {
   at: number;
 }
 
+/**
+ * Workflow paused on a partial-failure decision gate. Set by
+ * `workflow:partial_failure_decision_needed` AFTER the execution loop
+ * completes when at least one delegate-sub-agent failed AND its cascade
+ * caused at least one dependent step to skip — i.e. the workflow can no
+ * longer deliver what the user originally asked for. Cleared by
+ * `workflow:partial_failure_decision_provided` (user picked continue/abort)
+ * or terminal task events.
+ *
+ * Distinct from `pendingApproval` (gates pre-execution) and
+ * `pendingHumanInput` (gates a planned `human-input` step). This one is
+ * a runtime gate, fired only after auto-recovery has been ruled out.
+ */
+export interface PendingPartialDecision {
+  taskId: string;
+  /** Failed step ids — the planned work that did not complete. */
+  failedStepIds: string[];
+  /** Dependent step ids that cascade-skipped because of the failure. */
+  skippedStepIds: string[];
+  /** Step ids that completed normally — drives "we have N answers" copy. */
+  completedStepIds: string[];
+  /** Backend-built one-line title (e.g. "1 of 4 steps failed; 1 dependent skipped"). */
+  summary: string;
+  /** Tightly-capped excerpt of what `'continue'` would ship. */
+  partialPreview?: string;
+  /** Backend-honored decision window (ms). UI uses this for the countdown. */
+  timeoutMs: number;
+  /** Wall-clock ms when decision_needed arrived. */
+  at: number;
+}
+
 export interface PendingApproval {
   taskId: string;
   goal: string;
@@ -249,6 +280,14 @@ export interface StreamingTurn {
    * chat bubble renders an inline answer textbox.
    */
   pendingHumanInput?: PendingHumanInput;
+  /**
+   * Workflow paused on a runtime partial-failure decision gate (after a
+   * delegate-sub-agent failed + cascade-skipped a dependent step). Set
+   * by `workflow:partial_failure_decision_needed`; cleared on
+   * `workflow:partial_failure_decision_provided` or terminal task events.
+   * While set, the chat bubble renders the inline decision card.
+   */
+  pendingPartialDecision?: PendingPartialDecision;
   /** Internal stream bookkeeping used to de-dupe legacy/rich text events. */
   stream?: StreamState;
   /**
@@ -320,6 +359,24 @@ interface StreamingTurnState {
   ingest: (sessionId: string, event: SSEEvent) => void;
   /** Called by the global SSE stream; only mutates recovered turns to avoid POST-stream duplicates. */
   ingestGlobal: (event: SSEEvent) => { sessionId: string; taskId: string; status: StreamingStatus } | null;
+  /**
+   * Replay persisted bus events into a recovered turn — fills the gap
+   * left by browser refresh / SSE reconnect, where the stream only
+   * forwards events that fire AFTER the new connection. Pre-refresh
+   * events (e.g. the single `task:stage_update` that set the
+   * "Planning · Decomposing" card) are durable in `task_events` but
+   * invisible to a fresh subscriber. This action folds those events
+   * through the same `reduceTurn` the live path uses.
+   *
+   * No-op when the matching session's turn is not `recovered` (live
+   * SSE is already authoritative there) or its taskId differs from
+   * the replayed log.
+   */
+  replayInto: (
+    sessionId: string,
+    taskId: string,
+    events: ReadonlyArray<{ eventType: string; payload: Record<string, unknown>; ts: number }>,
+  ) => void;
   /** Called when the send mutation ends (success or error) — clears the bubble. */
   clear: (sessionId: string) => void;
   /**
@@ -405,6 +462,27 @@ function parsePartialToolInput(partialJson: string | undefined): unknown {
  */
 function currentRunningStepId(turn: StreamingTurn): string | undefined {
   return turn.planSteps.find((s) => s.status === 'running')?.id;
+}
+
+/**
+ * Resolve the plan step that owns a tool/agent event. When the event came
+ * from a delegated sub-agent the payload's `taskId` is the SUB-task id
+ * (`workflow:delegate_dispatched.subTaskId`), so we look it up in
+ * `subTaskIdIndex` to pin the tool to the right delegate step. Without this,
+ * parallel delegates would all dump their tool calls onto whichever step
+ * `currentRunningStepId` returned first — collapsing 3 personas' "Read X /
+ * Fetched Y / Searched Z" into one row.
+ */
+function resolveStepId(
+  turn: StreamingTurn,
+  payload: Record<string, unknown>,
+): string | undefined {
+  const eventTaskId = typeof payload.taskId === 'string' ? (payload.taskId as string) : undefined;
+  if (eventTaskId && turn.taskId && eventTaskId !== turn.taskId) {
+    const subStep = turn.subTaskIdIndex[eventTaskId];
+    if (subStep) return subStep;
+  }
+  return currentRunningStepId(turn);
 }
 
 function attachToolToStep(turn: StreamingTurn, toolId: string, stepId: string | undefined): StreamingTurn {
@@ -576,6 +654,26 @@ export const useStreamingTurnStore = create<StreamingTurnState>((set) => ({
     });
     return result;
   },
+  replayInto: (sessionId, taskId, events) =>
+    set((s) => {
+      const prev = s.bySession[sessionId];
+      // Only replay into the recovered (post-refresh) shell. A turn
+      // started by the live `start()` action is already authoritative;
+      // a turn whose taskId does not match means /tasks has moved on
+      // since the history was fetched and we'd be overwriting fresher
+      // state with stale rows.
+      if (!prev || !prev.recovered || prev.taskId !== taskId) return s;
+      if (events.length === 0) return s;
+      let next = prev;
+      for (const ev of events) {
+        next = reduceTurn(next, { event: ev.eventType, payload: ev.payload, ts: ev.ts });
+      }
+      if (next === prev) return s;
+      return {
+        bySession: { ...s.bySession, [sessionId]: next },
+        taskSessionIndex: { ...s.taskSessionIndex, [taskId]: sessionId },
+      };
+    }),
   setError: (sessionId, reason) =>
     set((s) => {
       const prev = s.bySession[sessionId];
@@ -667,13 +765,16 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
     }
     case 'agent:tool_started': {
       // Phase 2 UX: show a "running" tool card before execution completes.
-      // Paired with `agent:tool_executed` via toolCallId.
+      // Paired with `agent:tool_executed` via toolCallId. Tool→step pinning
+      // prefers `subTaskIdIndex` (deterministic for delegated sub-agents)
+      // and falls back to `currentRunningStepId` for in-process workflow
+      // steps that don't carry a sub-task taskId.
       const toolName = toolNameFromPayload(p);
       const toolId = toolCallIdFromPayload(p, `${toolName}-${turn.toolCalls.length}`);
       // Dedupe: if an entry with this id already exists, leave it alone.
       if (turn.toolCalls.some((t) => t.id === toolId)) return turn;
       const args = (p.args as unknown) ?? (p.input as unknown) ?? undefined;
-      const planStepId = currentRunningStepId(turn);
+      const planStepId = resolveStepId(turn, p);
       const next: StreamingTurn = {
         ...turn,
         toolCalls: [
@@ -708,13 +809,27 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
         toolCalls[idx] = updated;
         return { ...turn, toolCalls };
       }
-      return {
+      // No matching tool_started — synthesize the entry. Same step
+      // resolution as the started branch: prefer sub-task mapping for
+      // delegated agents.
+      const planStepId = resolveStepId(turn, p);
+      const synthesized: StreamingTurn = {
         ...turn,
         toolCalls: [
           ...turn.toolCalls,
-          { id: toolId, name: toolName, args, status, result, durationMs, at: event.ts },
+          {
+            id: toolId,
+            name: toolName,
+            args,
+            status,
+            result,
+            durationMs,
+            at: event.ts,
+            planStepId,
+          },
         ],
       };
+      return attachToolToStep(synthesized, toolId, planStepId);
     }
     case 'oracle:verdict': {
       const oracle = (p.oracleName as string) ?? (p.oracle as string) ?? 'oracle';
@@ -1040,6 +1155,7 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
         // orchestrator races past the gate (e.g. auto-approve timeout).
         pendingApproval: undefined,
         pendingHumanInput: undefined,
+        pendingPartialDecision: undefined,
         ...(isFailureStatus
           ? { error: content ?? (result.escalationReason as string | undefined) ?? `Task ${status}` }
           : {}),
@@ -1068,6 +1184,7 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
         error: message,
         pendingApproval: undefined,
         pendingHumanInput: undefined,
+        pendingPartialDecision: undefined,
       };
     }
     case 'worker:error': {
@@ -1078,6 +1195,7 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
         error: (p.error as string) ?? 'Worker error',
         pendingApproval: undefined,
         pendingHumanInput: undefined,
+        pendingPartialDecision: undefined,
       };
     }
     case 'workflow:plan_ready': {
@@ -1159,6 +1277,7 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
         finishedAt: event.ts || Date.now(),
         pendingApproval: undefined,
         pendingHumanInput: undefined,
+        pendingPartialDecision: undefined,
         error: reason,
       };
     }
@@ -1194,6 +1313,54 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
         status: 'running',
         pendingHumanInput: undefined,
       };
+    }
+    case 'workflow:partial_failure_decision_needed': {
+      // Sub-task isolation: only accept events for the active turn's
+      // task — a delegated sub-agent that runs its own workflow could
+      // theoretically emit one, but the backend already bypasses the
+      // gate for sub-tasks (parentTaskId set). Defensive guard either way.
+      const eventTaskId = typeof p.taskId === 'string' ? (p.taskId as string) : undefined;
+      if (eventTaskId && turn.taskId && eventTaskId !== turn.taskId) return turn;
+      const taskId = eventTaskId ?? turn.taskId;
+      const failedStepIds = Array.isArray(p.failedStepIds)
+        ? (p.failedStepIds as unknown[]).filter((s): s is string => typeof s === 'string')
+        : [];
+      const skippedStepIds = Array.isArray(p.skippedStepIds)
+        ? (p.skippedStepIds as unknown[]).filter((s): s is string => typeof s === 'string')
+        : [];
+      const completedStepIds = Array.isArray(p.completedStepIds)
+        ? (p.completedStepIds as unknown[]).filter((s): s is string => typeof s === 'string')
+        : [];
+      const summary = typeof p.summary === 'string' ? (p.summary as string) : '';
+      const partialPreview =
+        typeof p.partialPreview === 'string' ? (p.partialPreview as string) : undefined;
+      const timeoutMs = typeof p.timeoutMs === 'number' ? (p.timeoutMs as number) : 180_000;
+      return {
+        ...turn,
+        // Reuse 'awaiting-human-input' to signal "user input expected" —
+        // the bubble distinguishes the surface by which `pending*` field
+        // is set, not by the status enum (which would otherwise need a
+        // new variant + plumbing through every consumer).
+        status: 'awaiting-human-input',
+        taskId,
+        pendingPartialDecision: {
+          taskId,
+          failedStepIds,
+          skippedStepIds,
+          completedStepIds,
+          summary,
+          partialPreview,
+          timeoutMs,
+          at: event.ts || Date.now(),
+        },
+      };
+    }
+    case 'workflow:partial_failure_decision_provided': {
+      // Decision recorded — tear down the card. Final status (partial vs
+      // failed) arrives via the subsequent task:complete event so we just
+      // unpause back to running here.
+      if (!turn.pendingPartialDecision) return turn;
+      return { ...turn, status: 'running', pendingPartialDecision: undefined };
     }
     case 'workflow:step_start': {
       // Per-step live signal complementing `agent:plan_update`. The plan

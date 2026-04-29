@@ -2,6 +2,7 @@ import { Fragment, useEffect, useLayoutEffect, useMemo, useState, useRef } from 
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useSessionMessages, useSendMessage } from '@/hooks/use-chat';
 import { useStreamingTurn, useStreamingTurnStore } from '@/hooks/use-streaming-turn';
+import { useRecoverTurnHistory } from '@/hooks/use-recover-turn-history';
 import { useTasks, useRetryTask } from '@/hooks/use-tasks';
 import {
   useArchiveSession,
@@ -126,6 +127,15 @@ export default function SessionChat() {
     const t = setInterval(() => setNowMs(Date.now()), 250);
     return () => clearInterval(t);
   }, [turn?.status]);
+
+  // After a browser refresh / fresh mount, a still-running task gets a
+  // `recovered: true` turn shell from `hydrateRunningTask`. The shell
+  // is empty until SSE pushes new events — but events that fired BEFORE
+  // the new connection (e.g. the `task:stage_update` that set the
+  // "Planning · Decomposing" stage card) never replay. This hook
+  // fetches the persisted event log and folds it through the same
+  // reducer the live SSE path uses, restoring the on-screen state.
+  useRecoverTurnHistory(sessionId, turn?.taskId ?? null, Boolean(turn?.recovered));
 
   useEffect(() => {
     if (!sessionId) return;

@@ -1,9 +1,7 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { RefreshCw, ShieldAlert } from 'lucide-react';
 import { useApprovals, useResolveApproval } from '@/hooks/use-approvals';
-import { useTasks } from '@/hooks/use-tasks';
 import { PageHeader } from '@/components/ui/page-header';
-import { StatusBadge } from '@/components/ui/badge';
 import { EmptyState } from '@/components/ui/empty-state';
 import { ConfirmDialog } from '@/components/ui/confirm';
 import { toast } from '@/store/toast-store';
@@ -11,48 +9,29 @@ import { timeAgo } from '@/lib/utils';
 
 type Decision = 'approved' | 'rejected';
 
-interface PendingRow {
-  taskId: string;
-  goal?: string;
-  submittedAt?: number;
-  status?: string;
-}
-
 export default function Approvals() {
   const approvalsQuery = useApprovals();
-  const tasksQuery = useTasks();
   const resolve = useResolveApproval();
 
-  const pendingIds = approvalsQuery.data ?? [];
-  const tasks = tasksQuery.data ?? [];
+  const rows = approvalsQuery.data ?? [];
 
-  const rows: PendingRow[] = useMemo(() => {
-    const byId = new Map(tasks.map((t) => [t.taskId, t]));
-    return pendingIds.map((id) => {
-      const t = byId.get(id);
-      return {
-        taskId: id,
-        goal: (t as { goal?: string } | undefined)?.goal,
-        status: t?.status,
-        submittedAt: (t as { submittedAt?: number } | undefined)?.submittedAt,
-      };
-    });
-  }, [pendingIds, tasks]);
-
-  const [pending, setPending] = useState<{ taskId: string; decision: Decision } | null>(null);
+  const [pending, setPending] = useState<{
+    taskId: string;
+    decision: Decision;
+    reason: string;
+    riskScore: number;
+  } | null>(null);
 
   const handleConfirm = async () => {
     if (!pending) return;
     try {
-      await resolve.mutateAsync(pending);
+      await resolve.mutateAsync({ taskId: pending.taskId, decision: pending.decision });
       toast.success(`Task ${pending.decision}`);
       setPending(null);
     } catch {
       /* toast already shown by mutation */
     }
   };
-
-  const isRefetching = approvalsQuery.isFetching || tasksQuery.isFetching;
 
   return (
     <div className="space-y-4">
@@ -63,13 +42,10 @@ export default function Approvals() {
           <button
             type="button"
             className="p-1.5 rounded text-text-dim hover:text-text hover:bg-white/5 transition-colors"
-            onClick={() => {
-              approvalsQuery.refetch();
-              tasksQuery.refetch();
-            }}
+            onClick={() => approvalsQuery.refetch()}
             title="Refresh"
           >
-            <RefreshCw size={14} className={isRefetching ? 'animate-spin' : ''} />
+            <RefreshCw size={14} className={approvalsQuery.isFetching ? 'animate-spin' : ''} />
           </button>
         }
       />
@@ -85,9 +61,9 @@ export default function Approvals() {
             <thead>
               <tr className="border-b border-border text-left text-text-dim text-xs">
                 <th className="px-4 py-2">Task</th>
-                <th className="px-4 py-2">Goal</th>
-                <th className="px-4 py-2">Status</th>
-                <th className="px-4 py-2">Submitted</th>
+                <th className="px-4 py-2">Reason</th>
+                <th className="px-4 py-2">Risk</th>
+                <th className="px-4 py-2">Requested</th>
                 <th className="px-4 py-2 text-right">Actions</th>
               </tr>
             </thead>
@@ -102,21 +78,28 @@ export default function Approvals() {
                       </span>
                     </div>
                   </td>
-                  <td className="px-4 py-2 text-text-dim truncate max-w-[28rem]">
-                    {row.goal ?? <span className="text-text-dim/60">—</span>}
+                  <td className="px-4 py-2 text-text truncate max-w-[28rem]" title={row.reason}>
+                    {row.reason}
                   </td>
-                  <td className="px-4 py-2">
-                    {row.status ? <StatusBadge status={row.status} /> : <span className="text-text-dim">—</span>}
+                  <td className="px-4 py-2 tabular-nums">
+                    <RiskBadge score={row.riskScore} />
                   </td>
                   <td className="px-4 py-2 text-text-dim tabular-nums">
-                    {row.submittedAt ? timeAgo(row.submittedAt) : '—'}
+                    {row.requestedAt ? timeAgo(row.requestedAt) : '—'}
                   </td>
                   <td className="px-4 py-2">
                     <div className="flex justify-end gap-2">
                       <button
                         type="button"
                         className="px-3 py-1 text-xs rounded bg-green/10 text-green border border-green/30 hover:bg-green/20"
-                        onClick={() => setPending({ taskId: row.taskId, decision: 'approved' })}
+                        onClick={() =>
+                          setPending({
+                            taskId: row.taskId,
+                            decision: 'approved',
+                            reason: row.reason,
+                            riskScore: row.riskScore,
+                          })
+                        }
                         disabled={resolve.isPending}
                       >
                         Approve
@@ -124,7 +107,14 @@ export default function Approvals() {
                       <button
                         type="button"
                         className="px-3 py-1 text-xs rounded bg-red/10 text-red border border-red/30 hover:bg-red/20"
-                        onClick={() => setPending({ taskId: row.taskId, decision: 'rejected' })}
+                        onClick={() =>
+                          setPending({
+                            taskId: row.taskId,
+                            decision: 'rejected',
+                            reason: row.reason,
+                            riskScore: row.riskScore,
+                          })
+                        }
                         disabled={resolve.isPending}
                       >
                         Reject
@@ -145,12 +135,22 @@ export default function Approvals() {
         title={pending?.decision === 'approved' ? 'Approve task?' : 'Reject task?'}
         description={
           pending ? (
-            <div>
+            <div className="space-y-2">
               <div>
                 Task <span className="font-mono text-xs">{pending.taskId}</span> will be
                 {pending.decision === 'approved' ? ' executed.' : ' cancelled.'}
               </div>
-              <div className="mt-2 text-xs text-text-dim">This action is logged and audited.</div>
+              <div className="rounded border border-border bg-bg/50 p-2 text-xs space-y-1">
+                <div>
+                  <span className="text-text-dim">Reason: </span>
+                  <span className="text-text">{pending.reason}</span>
+                </div>
+                <div>
+                  <span className="text-text-dim">Risk score: </span>
+                  <span className="font-mono text-text">{pending.riskScore.toFixed(2)}</span>
+                </div>
+              </div>
+              <div className="text-xs text-text-dim">This action is logged and audited.</div>
             </div>
           ) : null
         }
@@ -159,5 +159,17 @@ export default function Approvals() {
         busy={resolve.isPending}
       />
     </div>
+  );
+}
+
+function RiskBadge({ score }: { score: number }) {
+  const tone =
+    score >= 0.85 ? 'bg-red/10 text-red border-red/30'
+    : score >= 0.7 ? 'bg-yellow/10 text-yellow border-yellow/30'
+    : 'bg-white/5 text-text-dim border-border';
+  return (
+    <span className={`inline-block px-2 py-0.5 text-xs rounded border ${tone} font-mono`}>
+      {score.toFixed(2)}
+    </span>
   );
 }

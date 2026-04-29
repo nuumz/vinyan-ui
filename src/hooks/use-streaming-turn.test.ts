@@ -536,6 +536,64 @@ describe('useStreamingTurnStore — bubble lifecycle', () => {
     expect(useStreamingTurnStore.getState().taskSessionIndex['task-99']).toBe('s1');
   });
 
+  test('replayInto folds persisted events into a recovered turn (stage card restored)', () => {
+    // Simulate the bug scenario: browser refresh during a running task,
+    // then `useRecoverTurnHistory` fetches the persisted event log.
+    useStreamingTurnStore.getState().hydrateRunningTask('s1', 'task-99');
+    expect(useStreamingTurnStore.getState().bySession.s1?.currentStageDetail).toBeUndefined();
+
+    useStreamingTurnStore.getState().replayInto('s1', 'task-99', [
+      { eventType: 'task:start', payload: { input: { id: 'task-99' } }, ts: now },
+      {
+        eventType: 'task:stage_update',
+        payload: { taskId: 'task-99', phase: 'plan', stage: 'decomposing', status: 'entered' },
+        ts: now + 1,
+      },
+    ]);
+
+    const turn = useStreamingTurnStore.getState().bySession.s1;
+    expect(turn?.taskId).toBe('task-99');
+    expect(turn?.currentStageDetail?.phase).toBe('plan');
+    expect(turn?.currentStageDetail?.stage).toBe('decomposing');
+  });
+
+  test('replayInto is a no-op for live (non-recovered) turns', () => {
+    // Fresh turn started by `start()` — recovered === undefined. Replaying
+    // history into it would clobber live state with stale snapshots.
+    useStreamingTurnStore.getState().start('s1');
+    useStreamingTurnStore.getState().ingest('s1', ev('task:start', { input: { id: 'task-A' } }));
+    const before = useStreamingTurnStore.getState().bySession.s1;
+
+    useStreamingTurnStore.getState().replayInto('s1', 'task-A', [
+      {
+        eventType: 'task:stage_update',
+        payload: { taskId: 'task-A', phase: 'plan', stage: 'decomposing', status: 'entered' },
+        ts: now + 1,
+      },
+    ]);
+
+    const after = useStreamingTurnStore.getState().bySession.s1;
+    // Live turn untouched: no stage detail leaked in from replay.
+    expect(after?.currentStageDetail).toBeUndefined();
+    expect(after).toBe(before);
+  });
+
+  test('replayInto is a no-op when taskId mismatches the recovered turn', () => {
+    // Race: history fetch returned for an old taskId after /tasks moved
+    // on. Applying the stale events would corrupt the new turn.
+    useStreamingTurnStore.getState().hydrateRunningTask('s1', 'task-NEW');
+    useStreamingTurnStore.getState().replayInto('s1', 'task-OLD', [
+      {
+        eventType: 'task:stage_update',
+        payload: { taskId: 'task-OLD', phase: 'plan', stage: 'decomposing', status: 'entered' },
+        ts: now,
+      },
+    ]);
+    const turn = useStreamingTurnStore.getState().bySession.s1;
+    expect(turn?.taskId).toBe('task-NEW');
+    expect(turn?.currentStageDetail).toBeUndefined();
+  });
+
   test('ingestGlobal updates only recovered turns (skips POST-stream ones)', () => {
     // Simulate an in-flight POST-stream turn (not recovered)
     useStreamingTurnStore.getState().start('s1');
@@ -927,5 +985,286 @@ describe('reduceTurn — multi-agent (AgentTimelineCard data)', () => {
     const step = seeded.planSteps.find((s) => s.id === 'step2')!;
     expect(step.outputPreview).toBe('real answer');
     expect(step.status).toBe('done');
+  });
+});
+
+describe('reduceTurn — sub-task tool attribution (compact step history)', () => {
+  // The agent-timeline-card drawer renders each delegate's "step history"
+  // (Read X / Fetched Y / Searched Z) by filtering `turn.toolCalls` on
+  // `planStepId`. For that to work the reducer must pin tool events from
+  // a sub-task's own LLM run to the right delegate step — NOT to whichever
+  // parent step `currentRunningStepId` happened to find first. These tests
+  // lock in the `subTaskIdIndex`-based attribution that powers the redesign.
+
+  function seedThreeDelegates() {
+    return fold(
+      reduceTurn(emptyTurn(), ev('task:start', { input: { id: 'parent-1' } })),
+      [
+        ev('agent:plan_update', {
+          taskId: 'parent-1',
+          steps: [
+            {
+              id: 's-researcher',
+              label: 'Researcher answers',
+              status: 'pending',
+              strategy: 'delegate-sub-agent',
+              agentId: 'researcher',
+            },
+            {
+              id: 's-author',
+              label: 'Author answers',
+              status: 'pending',
+              strategy: 'delegate-sub-agent',
+              agentId: 'author',
+            },
+            {
+              id: 's-mentor',
+              label: 'Mentor answers',
+              status: 'pending',
+              strategy: 'delegate-sub-agent',
+              agentId: 'mentor',
+            },
+          ],
+        }),
+        ev('workflow:delegate_dispatched', {
+          taskId: 'parent-1',
+          stepId: 's-researcher',
+          agentId: 'researcher',
+          subTaskId: 'sub-r',
+          stepDescription: '...',
+        }),
+        ev('workflow:delegate_dispatched', {
+          taskId: 'parent-1',
+          stepId: 's-author',
+          agentId: 'author',
+          subTaskId: 'sub-a',
+          stepDescription: '...',
+        }),
+        ev('workflow:delegate_dispatched', {
+          taskId: 'parent-1',
+          stepId: 's-mentor',
+          agentId: 'mentor',
+          subTaskId: 'sub-m',
+          stepDescription: '...',
+        }),
+      ],
+    );
+  }
+
+  test('agent:tool_started from sub-task pins planStepId via subTaskIdIndex', () => {
+    const seeded = seedThreeDelegates();
+    const after = reduceTurn(
+      seeded,
+      ev('agent:tool_started', {
+        taskId: 'sub-r',
+        toolCallId: 'call-1',
+        toolName: 'web_fetch',
+        args: { url: 'https://example.com' },
+      }),
+    );
+    const tool = after.toolCalls.find((t) => t.id === 'call-1')!;
+    expect(tool.planStepId).toBe('s-researcher');
+    expect(tool.name).toBe('web_fetch');
+    // attachToolToStep also threads it onto the step's toolCallIds.
+    const step = after.planSteps.find((s) => s.id === 's-researcher')!;
+    expect(step.toolCallIds).toContain('call-1');
+  });
+
+  test('parallel delegates each get their own tool calls (no cross-attribution)', () => {
+    // Image 2 case: 3 delegates running in parallel. Without subTaskId
+    // resolution, all of their tools would land on whichever delegate
+    // was first in `planSteps` (because all three are status=running and
+    // currentRunningStepId returns the first match) — collapsing each
+    // persona's history into one row.
+    const seeded = seedThreeDelegates();
+    const after = fold(seeded, [
+      ev('agent:tool_started', {
+        taskId: 'sub-r',
+        toolCallId: 'r1',
+        toolName: 'web_fetch',
+        args: { url: 'a' },
+      }),
+      ev('agent:tool_started', {
+        taskId: 'sub-a',
+        toolCallId: 'a1',
+        toolName: 'read_file',
+        args: { path: 'x.ts' },
+      }),
+      ev('agent:tool_started', {
+        taskId: 'sub-m',
+        toolCallId: 'm1',
+        toolName: 'grep_search',
+        args: { query: 'foo' },
+      }),
+    ]);
+    const byStep = new Map(
+      after.planSteps.map((s) => [
+        s.id,
+        after.toolCalls.filter((t) => t.planStepId === s.id).map((t) => t.id),
+      ]),
+    );
+    expect(byStep.get('s-researcher')).toEqual(['r1']);
+    expect(byStep.get('s-author')).toEqual(['a1']);
+    expect(byStep.get('s-mentor')).toEqual(['m1']);
+  });
+
+  test('agent:tool_executed updates the matching tool_started entry without losing planStepId', () => {
+    const seeded = seedThreeDelegates();
+    const after = fold(seeded, [
+      ev('agent:tool_started', {
+        taskId: 'sub-a',
+        toolCallId: 'a1',
+        toolName: 'read_file',
+        args: { path: 'x.ts' },
+      }),
+      ev('agent:tool_executed', {
+        taskId: 'sub-a',
+        toolCallId: 'a1',
+        toolName: 'read_file',
+        durationMs: 137,
+        isError: false,
+      }),
+    ]);
+    const tool = after.toolCalls.find((t) => t.id === 'a1')!;
+    expect(tool.status).toBe('success');
+    expect(tool.durationMs).toBe(137);
+    expect(tool.planStepId).toBe('s-author');
+  });
+
+  test('agent:tool_executed without prior tool_started synthesizes entry pinned via sub-task', () => {
+    // Dropped/missed `tool_started` (e.g. legacy backend, replay edge): the
+    // executed event must still attach to the right delegate, otherwise the
+    // step history loses entries silently.
+    const seeded = seedThreeDelegates();
+    const after = reduceTurn(
+      seeded,
+      ev('agent:tool_executed', {
+        taskId: 'sub-m',
+        toolCallId: 'm-orphan',
+        toolName: 'web_fetch',
+        durationMs: 42,
+        isError: false,
+        args: { url: 'https://x' },
+      }),
+    );
+    const tool = after.toolCalls.find((t) => t.id === 'm-orphan')!;
+    expect(tool.planStepId).toBe('s-mentor');
+    expect(tool.status).toBe('success');
+  });
+
+  test('partial_failure_decision_needed sets pendingPartialDecision + status awaiting-human-input', () => {
+    const turn = reduceTurn(
+      reduceTurn(emptyTurn(), ev('task:start', { input: { id: 'task-pf' } })),
+      ev('workflow:partial_failure_decision_needed', {
+        taskId: 'task-pf',
+        failedStepIds: ['step2'],
+        skippedStepIds: ['step4'],
+        completedStepIds: ['step1', 'step3'],
+        summary: '1 of 4 steps failed; 1 dependent step skipped.',
+        partialPreview: '**researcher**: hello\n\n**mentor**: world',
+        timeoutMs: 180_000,
+      }),
+    );
+    expect(turn.status).toBe('awaiting-human-input');
+    expect(turn.pendingPartialDecision).toBeDefined();
+    expect(turn.pendingPartialDecision!.failedStepIds).toEqual(['step2']);
+    expect(turn.pendingPartialDecision!.skippedStepIds).toEqual(['step4']);
+    expect(turn.pendingPartialDecision!.completedStepIds).toEqual(['step1', 'step3']);
+    expect(turn.pendingPartialDecision!.timeoutMs).toBe(180_000);
+    expect(turn.pendingPartialDecision!.partialPreview).toContain('researcher');
+  });
+
+  test('partial_failure_decision_provided clears pendingPartialDecision and resumes running', () => {
+    const after = fold(
+      reduceTurn(emptyTurn(), ev('task:start', { input: { id: 'task-pf' } })),
+      [
+        ev('workflow:partial_failure_decision_needed', {
+          taskId: 'task-pf',
+          failedStepIds: ['step2'],
+          skippedStepIds: ['step4'],
+          completedStepIds: ['step1'],
+          summary: 'x',
+          timeoutMs: 60_000,
+        }),
+        ev('workflow:partial_failure_decision_provided', {
+          taskId: 'task-pf',
+          decision: 'continue',
+        }),
+      ],
+    );
+    expect(after.pendingPartialDecision).toBeUndefined();
+    expect(after.status).toBe('running');
+  });
+
+  test('partial_failure_decision_needed from a sub-task is ignored', () => {
+    // Backend already bypasses the gate for sub-tasks, but the reducer is
+    // a defense-in-depth — never let a stray sub-task event hijack the
+    // parent's UI surface.
+    const seeded = reduceTurn(emptyTurn(), ev('task:start', { input: { id: 'parent-1' } }));
+    const after = reduceTurn(
+      seeded,
+      ev('workflow:partial_failure_decision_needed', {
+        taskId: 'sub-task-1', // different from parent
+        failedStepIds: ['step2'],
+        skippedStepIds: ['step4'],
+        completedStepIds: [],
+        summary: 'leak',
+        timeoutMs: 60_000,
+      }),
+    );
+    expect(after.pendingPartialDecision).toBeUndefined();
+    expect(after.status).toBe(seeded.status);
+  });
+
+  test('task:complete clears pendingPartialDecision (terminal teardown)', () => {
+    const after = fold(
+      reduceTurn(emptyTurn(), ev('task:start', { input: { id: 'task-pf' } })),
+      [
+        ev('workflow:partial_failure_decision_needed', {
+          taskId: 'task-pf',
+          failedStepIds: ['step2'],
+          skippedStepIds: ['step4'],
+          completedStepIds: [],
+          summary: 'x',
+          timeoutMs: 60_000,
+        }),
+        ev('task:complete', {
+          result: { id: 'task-pf', status: 'partial', content: 'partial answer' },
+        }),
+      ],
+    );
+    expect(after.pendingPartialDecision).toBeUndefined();
+    expect(after.status).toBe('done');
+    expect(after.resultStatus).toBe('partial');
+  });
+
+  test('tool event with unknown taskId falls back to currentRunningStepId', () => {
+    // Non-delegate workflow paths (e.g. an in-process llm-reasoning step
+    // running its own tool) don't carry a sub-task id. They must still
+    // attribute via the current-running-step heuristic.
+    const seeded = fold(
+      reduceTurn(emptyTurn(), ev('task:start', { input: { id: 'parent-1' } })),
+      [
+        ev('agent:plan_update', {
+          taskId: 'parent-1',
+          steps: [
+            {
+              id: 'lr',
+              label: 'Reason about input',
+              status: 'running',
+              strategy: 'llm-reasoning',
+            },
+          ],
+        }),
+        ev('agent:tool_started', {
+          taskId: 'parent-1',
+          toolCallId: 'lr-1',
+          toolName: 'shell',
+          args: { command: 'ls' },
+        }),
+      ],
+    );
+    const tool = seeded.toolCalls.find((t) => t.id === 'lr-1')!;
+    expect(tool.planStepId).toBe('lr');
   });
 });

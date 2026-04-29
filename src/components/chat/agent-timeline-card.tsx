@@ -7,54 +7,64 @@ import {
   CircleDashed,
   Clock,
   Columns3,
+  FileText,
+  Globe,
+  GitBranch,
   Hourglass,
   Loader2,
+  Search,
   SkipForward,
+  Terminal,
   Users,
+  Wrench,
   Zap,
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { PlanStep } from '@/hooks/use-streaming-turn';
+import type { PlanStep, ToolCall } from '@/hooks/use-streaming-turn';
+import { classifyTool, toolBadgeLabel, toolPrimaryPreview } from '@/lib/summarize-tools';
+import type { ToolCategory } from '@/lib/summarize-tools';
 import { Markdown } from './markdown';
 
 /**
  * Multi-agent activity card. Lifecycle-aware surface for `delegate-sub-agent`
- * fanout. Three problems with the prior live-only design that this version
- * solves:
+ * fanout. Designed to encapsulate per-agent work as a compact "step history"
+ * so the card stays scannable instead of dumping each delegate's final
+ * Markdown answer inline (which duplicated the PlanSurface expansion below).
  *
- *   1. **Queued duplication** — when every delegate is still pending (the
- *      planner has dispatched the rows but their dependency, e.g. an
- *      "Ask the user" step, hasn't completed yet) the card used to render
- *      a full row stack identical to the PlanSurface checklist below it.
- *      We now degrade to a single 1-line "queued · waiting on step N" chip
- *      so PlanSurface owns the data until something actually moves.
+ * Drawer layout (per row, expanded):
+ *   - sub-task id (debug)
+ *   - compact event timeline: Read X / Fetched Y / Searched Z / Ran W —
+ *     one row per ToolCall pinned to this delegate via the reducer's
+ *     `subTaskIdIndex`-based `resolveStepId` attribution.
+ *   - "View final answer" disclosure, collapsed by default. The full
+ *     answer remains canonically owned by PlanSurface; this disclosure
+ *     keeps the in-context audit affordance without re-dumping the wall.
  *
- *   2. **Lost audit affordance** — the live-only redesign dropped the
- *      expand-to-read drawer. Restored: each row expands to show the
- *      streaming tail (while running) or the agent's full Markdown output
- *      (after `workflow:delegate_completed`), and a Compare side-by-side
- *      view stacks 2+ completed agents in columns for direct comparison.
- *
- *   3. **Unresolved placeholder leak** — when N delegates share the same
- *      label like "Answer the question from $step1.result" (template var
- *      not yet resolved), the de-dup logic surfaced the raw placeholder
- *      as if it were the goal. We suppress the shared header in that case.
- *
- * State machine (computed once per render from delegateRows):
+ * Card-level state machine (computed once per render from delegateRows):
  *   - QUEUED:   nothing has moved yet                          → 1-line chip
  *   - ACTIVE:   ≥1 running, OR mixed pending/done in flight    → full live card
  *   - COMPLETE: every row in done|failed|skipped               → audit + compare
+ *
+ * Edge cases preserved from the prior version:
+ *   - QUEUED degradation: when every delegate is still pending the card
+ *     shrinks to a single "queued · waiting on step N" chip so it doesn't
+ *     mirror the PlanSurface checklist.
+ *   - Unresolved placeholder header (`$step1.result`) is suppressed.
+ *   - Compare side-by-side view stacks 2+ completed agents in columns,
+ *     reading from `outputPreview` directly.
  */
 export interface AgentTimelineCardProps {
   /** Plan steps from the parent turn. Filtered internally to delegate-sub-agent rows. */
   steps: PlanStep[];
   /**
-   * Per-step LLM output stream from `StreamingTurn.stepOutputs`. Used for
-   * the live snippet/cursor on running rows. Optional — historical replays
-   * that don't carry stepOutputs still work, falling back to
-   * `step.outputPreview` from `workflow:delegate_completed`.
+   * All tool calls from the parent turn. The card filters by `planStepId`
+   * to render each delegate's compact step history (Read X / Fetched Y /
+   * Searched Z) inside the row drawer. The reducer's `resolveStepId`
+   * pins each sub-agent's tool events to its delegate step via the
+   * subTaskId index, so this filter is exact per delegate.
    */
-  stepOutputs?: Record<string, string>;
+  toolCalls?: ToolCall[];
   /** True while the parent turn is still running — drives live pulses. */
   isLive?: boolean;
 }
@@ -111,11 +121,6 @@ function looksUnresolved(label: string): boolean {
   return PLACEHOLDER_RE.test(label);
 }
 
-function liveTail(text: string, max: number): string {
-  if (text.length <= max) return text;
-  return '…' + text.slice(-max);
-}
-
 // First non-delegate step that hasn't completed yet — typically what the
 // queued delegates are waiting on. Powers the QUEUED chip's "waiting on X".
 function findBlockingStep(allSteps: PlanStep[], delegateIds: Set<string>): PlanStep | null {
@@ -126,14 +131,149 @@ function findBlockingStep(allSteps: PlanStep[], delegateIds: Set<string>): PlanS
   return null;
 }
 
+// Lucide icon per tool family — small visual cue so the eye can scan a long
+// agent step history the same way it scans an editor's "Inspecting event
+// data" panel (Read / Fetch / Search / Run). Falls back to `Wrench` for any
+// uncategorized MCP tool so the row still renders.
+const TOOL_ICON: Record<ToolCategory, LucideIcon> = {
+  read: FileText,
+  edit: FileText,
+  shell: Terminal,
+  search: Search,
+  list: FileText,
+  fetch: Globe,
+  memory: FileText,
+  plan: FileText,
+  delegate: Users,
+  git: GitBranch,
+  other: Wrench,
+};
+
+function truncate(text: string, max: number): string {
+  if (text.length <= max) return text;
+  return `${text.slice(0, max - 1)}…`;
+}
+
+interface HumanizedTool {
+  Icon: LucideIcon;
+  verb: string;
+  subject: string;
+}
+
+// Map a single ToolCall into Claude Code-style "verb + subject" — e.g.
+// `Read foo.ts` / `Fetched localhost:4000/...` / `Ran tool: vinyan_search`.
+// Reuses `summarize-tools` so we stay aligned with the badge/category
+// vocabulary used across the rest of the chat surface.
+function humanizeTool(tool: ToolCall): HumanizedTool {
+  const cat = classifyTool(tool.name);
+  const Icon = TOOL_ICON[cat];
+  const primary = toolPrimaryPreview(tool.name, tool.args);
+  switch (cat) {
+    case 'read':
+      return { Icon, verb: 'Read', subject: primary || tool.name };
+    case 'edit':
+      return { Icon, verb: 'Edited', subject: primary || tool.name };
+    case 'shell':
+      return { Icon, verb: 'Ran', subject: primary || tool.name };
+    case 'search':
+      return { Icon, verb: 'Searched for', subject: primary || tool.name };
+    case 'list':
+      return { Icon, verb: 'Listed', subject: primary || tool.name };
+    case 'fetch':
+      return { Icon, verb: 'Fetched', subject: primary || tool.name };
+    case 'memory':
+      return { Icon, verb: 'Memory', subject: primary || tool.name };
+    case 'plan':
+      return { Icon, verb: 'Updated plan', subject: primary || '' };
+    case 'delegate':
+      return { Icon, verb: 'Delegated', subject: primary || tool.name };
+    case 'git':
+      return { Icon, verb: 'Git', subject: primary || tool.name };
+    default:
+      return { Icon, verb: toolBadgeLabel(tool.name), subject: primary || '' };
+  }
+}
+
+interface SubAgentEventRowProps {
+  tool: ToolCall;
+}
+
+function SubAgentEventRow({ tool }: SubAgentEventRowProps) {
+  const { Icon, verb, subject } = humanizeTool(tool);
+  const statusTone =
+    tool.status === 'success'
+      ? 'text-green/85'
+      : tool.status === 'error'
+        ? 'text-red'
+        : 'text-blue/85';
+  return (
+    <li className="flex items-center gap-2 py-0.5 text-[11px] leading-5">
+      <Icon
+        size={11}
+        className={cn('shrink-0', statusTone, tool.status === 'running' && 'animate-pulse')}
+      />
+      <span className="text-text/85 truncate min-w-0">
+        <span className="text-text-dim/85">{verb}</span>
+        {subject ? (
+          <span className="ml-1.5 font-mono text-text/90">{truncate(subject, 90)}</span>
+        ) : null}
+      </span>
+      {tool.status === 'running' && (
+        <span className="ml-auto shrink-0 text-[10px] uppercase tracking-wide text-blue/85 font-medium">
+          running
+        </span>
+      )}
+      {tool.status !== 'running' && tool.durationMs != null && (
+        <span className="ml-auto shrink-0 text-text-dim/70 font-mono tabular-nums text-[10px]">
+          {tool.durationMs < 1000 ? `${tool.durationMs}ms` : `${(tool.durationMs / 1000).toFixed(1)}s`}
+        </span>
+      )}
+    </li>
+  );
+}
+
+interface FinalAnswerDisclosureProps {
+  text: string;
+}
+
+// Final agent answer is canonically rendered by PlanSurface (per-step
+// expansion via `stepOutputs[stepId]`). Keeping a collapsed disclosure here
+// preserves the in-context "view what this agent said" affordance without
+// duplicating the full Markdown wall on first sight — which was the user's
+// original complaint about the multi-agent run card.
+function FinalAnswerDisclosure({ text }: FinalAnswerDisclosureProps) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="pt-1">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide font-medium text-text-dim hover:text-text/85"
+        aria-expanded={open}
+      >
+        <ChevronRight
+          size={9}
+          className={cn('transition-transform', open && 'rotate-90')}
+        />
+        {open ? 'Hide answer' : 'View final answer'}
+      </button>
+      {open && (
+        <div className="mt-1 text-text/90 max-h-72 overflow-auto border-l border-border/30 pl-2.5">
+          <Markdown content={text} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface DelegateRowProps {
   step: PlanStep;
-  liveText: string;
+  events: ToolCall[];
   isLive: boolean;
   defaultOpen: boolean;
 }
 
-function DelegateRow({ step, liveText, isLive, defaultOpen }: DelegateRowProps) {
+function DelegateRow({ step, events, isLive, defaultOpen }: DelegateRowProps) {
   const [open, setOpen] = useState(defaultOpen);
   const meta = statusMeta(step);
   const Icon = meta.Icon;
@@ -145,9 +285,20 @@ function DelegateRow({ step, liveText, isLive, defaultOpen }: DelegateRowProps) 
         ? '…'
         : null;
 
-  const isStreaming = step.status === 'running' && liveText.length > 0;
   const hasFinalOutput = !!step.outputPreview && step.outputPreview.trim().length > 0;
-  const expandable = isStreaming || hasFinalOutput || step.status === 'failed';
+  const hasEvents = events.length > 0;
+  const expandable = hasEvents || hasFinalOutput || step.status === 'failed';
+
+  // Latest in-flight event surfaces in the collapsed strip while the agent
+  // is working — replaces the streamed-text tail so the user sees "Read
+  // foo.ts" instead of a wall of unfinished prose. Falls through to the
+  // most recent event regardless of status when nothing is currently
+  // running, so a paused/in-between row still shows what the agent just
+  // did rather than a blank strip.
+  const inFlight =
+    step.status === 'running' && hasEvents
+      ? events.find((e) => e.status === 'running') ?? events[events.length - 1]
+      : null;
 
   return (
     <li
@@ -187,10 +338,14 @@ function DelegateRow({ step, liveText, isLive, defaultOpen }: DelegateRowProps) 
             {step.agentId ?? 'agent?'}
           </span>
         </span>
-        {!open && isStreaming ? (
-          <span className="flex-1 text-[11px] text-text/75 line-clamp-1 min-w-0 italic">
-            {liveTail(liveText, 90)}
-            <span className="ml-0.5 inline-block h-2.5 w-1 animate-pulse bg-accent align-middle" />
+        {!open && inFlight ? (
+          <span className="flex-1 text-[11px] text-text-dim/85 line-clamp-1 min-w-0">
+            <span className="text-text-dim/70">{humanizeTool(inFlight).verb}</span>
+            {humanizeTool(inFlight).subject && (
+              <span className="ml-1.5 font-mono text-text/80">
+                {truncate(humanizeTool(inFlight).subject, 70)}
+              </span>
+            )}
           </span>
         ) : (
           <span className="flex-1" aria-hidden />
@@ -216,26 +371,23 @@ function DelegateRow({ step, liveText, isLive, defaultOpen }: DelegateRowProps) 
           {step.subTaskId && (
             <div className="text-[10px] font-mono text-text-dim/70">sub-task: {step.subTaskId}</div>
           )}
-          {isStreaming ? (
-            <div className="text-text/90">
-              <Markdown content={liveText} />
-              <span className="ml-0.5 inline-block h-3 w-1 animate-pulse bg-accent align-middle" />
-            </div>
-          ) : hasFinalOutput ? (
-            <div className="text-text/90 max-h-72 overflow-auto">
-              <Markdown content={step.outputPreview ?? ''} />
-              {(step.outputPreview ?? '').length >= 300 && (
-                <div className="mt-1 text-[10px] italic text-text-dim">
-                  (preview from delegate_completed — full output is in the synthesized answer)
-                </div>
-              )}
-            </div>
-          ) : step.status === 'failed' ? (
+          {hasEvents ? (
+            <ol className="space-y-0">
+              {events.map((tool) => (
+                <SubAgentEventRow key={tool.id} tool={tool} />
+              ))}
+            </ol>
+          ) : step.status === 'running' ? (
+            <div className="italic text-text-dim text-[11px]">Waiting for first tool call…</div>
+          ) : null}
+          {hasFinalOutput && <FinalAnswerDisclosure text={step.outputPreview ?? ''} />}
+          {step.status === 'failed' && !hasFinalOutput && (
             <div className="rounded border border-red/25 bg-red/5 p-2 text-red/90">
               [no output captured — agent {meta.label}]
             </div>
-          ) : (
-            <div className="italic text-text-dim">[no output captured]</div>
+          )}
+          {!hasEvents && !hasFinalOutput && step.status !== 'running' && step.status !== 'failed' && (
+            <div className="italic text-text-dim">[no activity captured]</div>
           )}
         </div>
       )}
@@ -301,11 +453,30 @@ function QueuedChip({ count, blocking }: { count: number; blocking: PlanStep | n
   );
 }
 
-function AgentTimelineCardImpl({ steps, stepOutputs = {}, isLive = false }: AgentTimelineCardProps) {
+function AgentTimelineCardImpl({
+  steps,
+  toolCalls = [],
+  isLive = false,
+}: AgentTimelineCardProps) {
   const delegateRows = useMemo(
     () => steps.filter((s) => s.strategy === 'delegate-sub-agent'),
     [steps],
   );
+
+  // Group tool calls by their resolved planStepId so each delegate row
+  // gets its own compact history. Reducer's `resolveStepId` pins tool
+  // events to delegate steps via subTaskId, so this filter is exact for
+  // delegated agents — it does NOT pick up the parent's own ad-hoc tools.
+  const eventsByStep = useMemo(() => {
+    const map = new Map<string, ToolCall[]>();
+    for (const t of toolCalls) {
+      if (!t.planStepId) continue;
+      const list = map.get(t.planStepId) ?? [];
+      list.push(t);
+      map.set(t.planStepId, list);
+    }
+    return map;
+  }, [toolCalls]);
 
   const counts = useMemo(() => {
     let pending = 0;
@@ -425,7 +596,7 @@ function AgentTimelineCardImpl({ steps, stepOutputs = {}, isLive = false }: Agen
           <DelegateRow
             key={row.id}
             step={row}
-            liveText={stepOutputs[row.id] ?? ''}
+            events={eventsByStep.get(row.id) ?? []}
             isLive={isLive}
             defaultOpen={row.status === 'failed'}
           />
