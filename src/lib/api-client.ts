@@ -1150,6 +1150,25 @@ export const api = {
       `/sessions/${sessionId}/workflow/reject`,
       { method: 'POST', body: JSON.stringify({ taskId, reason }) },
     ),
+  /**
+   * Workflow paused on a `human-input` step (e.g. "Ask the user for the
+   * topic"). The user's answer becomes that step's output and downstream
+   * dependents continue. Backend emits `workflow:human_input_provided` on
+   * the bus, which resolves the executor's wait.
+   */
+  provideWorkflowHumanInput: (
+    sessionId: string,
+    args: { taskId: string; stepId: string; value: string },
+  ) =>
+    fetchJSON<{
+      taskId: string;
+      stepId: string;
+      sessionId: string;
+      status: 'recorded';
+    }>(`/sessions/${sessionId}/workflow/human-input`, {
+      method: 'POST',
+      body: JSON.stringify(args),
+    }),
 
   /**
    * Send a message using SSE streaming. Returns an async generator that

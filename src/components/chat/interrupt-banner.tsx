@@ -2,6 +2,7 @@ import { HelpCircle } from 'lucide-react';
 import type { StreamingTurn } from '@/hooks/use-streaming-turn';
 import { TurnErrorPanel } from './turn-error-panel';
 import { WorkflowApprovalCard } from './workflow-approval-card';
+import { WorkflowHumanInputCard } from './workflow-human-input-card';
 
 interface InterruptBannerProps {
   turn: StreamingTurn;
@@ -12,11 +13,12 @@ interface InterruptBannerProps {
 /**
  * Loud, full-width "user attention required" surface placed above the plan.
  *
- * Composes three previously-separate blocks (workflow approval card,
- * clarification list, error panel) into a single banner slot so the chat
- * bubble has exactly one place where interrupts live. Always renders
- * something or returns null — never two interrupt UIs at once. Priority,
- * top → bottom: approval > clarification > error.
+ * Composes four previously-separate blocks (workflow approval card,
+ * workflow human-input card, clarification list, error panel) into a
+ * single banner slot so the chat bubble has exactly one place where
+ * interrupts live. Always renders something or returns null — never two
+ * interrupt UIs at once. Priority, top → bottom: approval > human-input >
+ * clarification > error.
  *
  * The banner styling intentionally shifts content downward when it appears
  * mid-stream — that loudness is the point. The receiving page should layer
@@ -25,6 +27,10 @@ interface InterruptBannerProps {
 export function InterruptBanner({ turn, sessionId, onRetry }: InterruptBannerProps) {
   if (turn.pendingApproval && turn.status === 'awaiting-approval') {
     return <WorkflowApprovalCard sessionId={sessionId} pending={turn.pendingApproval} />;
+  }
+
+  if (turn.pendingHumanInput && turn.status === 'awaiting-human-input') {
+    return <WorkflowHumanInputCard sessionId={sessionId} pending={turn.pendingHumanInput} />;
   }
 
   if (turn.status === 'input-required' && turn.clarifications.length > 0) {

@@ -45,6 +45,14 @@ function deriveStatus(turn: StreamingTurn, elapsedMs: number): HeaderStatus {
       tone: 'text-yellow',
     };
   }
+  if (turn.status === 'awaiting-human-input') {
+    return {
+      label: 'Awaiting your answer',
+      detail: turn.pendingHumanInput?.question ?? 'Workflow paused on input step',
+      Icon: ShieldQuestion,
+      tone: 'text-blue',
+    };
+  }
   if (turn.status === 'input-required') {
     return {
       label: 'Awaiting your reply',

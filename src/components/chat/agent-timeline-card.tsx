@@ -26,9 +26,22 @@ import type { PlanStep } from '@/hooks/use-streaming-turn';
  *     delegate steps, status-first emphasis (pulsing while running),
  *     no output text (that lives in the plan expansion).
  *
- * Positioned ABOVE the plan checklist when the workflow has multiple
- * agents — it answers the at-a-glance question "what are the agents
- * doing right now" before the user has to scan the plan rows.
+ * Visual design notes:
+ *   - The row container is intentionally NEUTRAL (no per-row colored
+ *     border / background tint by default). Status is conveyed through
+ *     the leading icon + the trailing label only. Full-row tinting is
+ *     reserved for `running` (subtle blue pulse) and failure states
+ *     (very faint red wash) so the card stays scannable when several
+ *     delegates run in parallel.
+ *   - Persona is a single neutral monospace pill — distinct typeface
+ *     for identity, not status. Avoids the prior "doubly color-coded"
+ *     look where the persona name's box was tinted with the row's
+ *     status colour and competed with the status icon.
+ *   - When EVERY delegate row carries the SAME step description (the
+ *     typical multi-agent pattern: "Answer the question: $step1.result"
+ *     resolves to the same goal text for each persona), the description
+ *     is shown ONCE in the card sub-header and omitted per row. This
+ *     prevents the same paragraph being repeated 3-4 times stacked.
  */
 export interface AgentTimelineCardProps {
   /** Plan steps from the parent turn. Filtered internally to delegate-sub-agent rows. */
@@ -45,38 +58,47 @@ function formatDuration(ms: number): string {
   return `${m}m${s}s`;
 }
 
-function statusMeta(step: PlanStep): {
+interface StatusMeta {
+  /** Lower-case status label shown next to the icon (e.g. "done"). */
   label: string;
   Icon: typeof CircleCheck;
-  cls: string;
+  /** Tailwind colour class applied to the icon + label only. */
+  text: string;
+  /** Optional row tint for live / failure states. Empty for done / pending. */
+  rowTint: string;
   spin?: boolean;
   pulse?: boolean;
-} {
+}
+
+function statusMeta(step: PlanStep): StatusMeta {
   const isTimeout =
     step.status === 'failed' && (step.outputPreview ?? '').toLowerCase().includes('timed out');
   if (isTimeout) {
     return {
       label: 'timed out',
       Icon: CircleAlert,
-      cls: 'text-red border-red/30 bg-red/5',
+      text: 'text-red',
+      rowTint: 'bg-red/[0.04]',
     };
   }
   switch (step.status) {
     case 'done':
-      return { label: 'done', Icon: CircleCheck, cls: 'text-green border-green/30 bg-green/5' };
+      return { label: 'done', Icon: CircleCheck, text: 'text-green', rowTint: '' };
     case 'failed':
-      return { label: 'failed', Icon: CircleAlert, cls: 'text-red border-red/30 bg-red/5' };
+      return { label: 'failed', Icon: CircleAlert, text: 'text-red', rowTint: 'bg-red/[0.04]' };
     case 'skipped':
       return {
         label: 'skipped',
         Icon: SkipForward,
-        cls: 'text-text-dim border-border bg-bg/40',
+        text: 'text-text-dim',
+        rowTint: '',
       };
     case 'running':
       return {
-        label: 'working…',
+        label: 'working',
         Icon: Loader2,
-        cls: 'text-blue border-blue/40 bg-blue/10',
+        text: 'text-blue',
+        rowTint: 'bg-blue/[0.06]',
         spin: true,
         pulse: true,
       };
@@ -84,7 +106,8 @@ function statusMeta(step: PlanStep): {
       return {
         label: 'pending',
         Icon: CircleDashed,
-        cls: 'text-text-dim border-border bg-bg/40',
+        text: 'text-text-dim',
+        rowTint: '',
       };
   }
 }
@@ -107,37 +130,58 @@ export function AgentTimelineCard({ steps, isLive = false }: AgentTimelineCardPr
   const runningCount = delegateRows.filter((s) => s.status === 'running').length;
   const allDone = doneCount + failedCount === delegateRows.length;
 
+  // De-dup repeated step description. The most common multi-agent
+  // pattern produces N delegates that all share the same `label`
+  // ("Answer the question: $step1.result" resolves to identical goal
+  // text for each persona). Showing the same paragraph 3-4 times under
+  // each row is pure noise — surface it once at card level instead.
+  const sharedLabel =
+    delegateRows.length > 1 &&
+    delegateRows.every((r) => (r.label ?? '') === (delegateRows[0]?.label ?? ''))
+      ? (delegateRows[0]?.label ?? null)
+      : null;
+
   return (
     <div
       className={cn(
-        'rounded-md border px-3 py-2 space-y-1.5',
+        'rounded-md border overflow-hidden',
         isLive && runningCount > 0
-          ? 'border-blue/30 bg-blue/5'
-          : 'border-border/60 bg-bg/30',
+          ? 'border-blue/25 bg-blue/[0.025]'
+          : 'border-border/50 bg-bg/20',
       )}
     >
-      <div className="flex items-center justify-between text-[11px] uppercase tracking-wide text-text-dim font-medium">
-        <span className="flex items-center gap-1.5">
+      {/* Header — counts + live indicator */}
+      <div className="flex items-center justify-between px-3 py-2 border-b border-border/30 bg-bg/20">
+        <span className="flex items-center gap-1.5 text-[11px] uppercase tracking-wide font-medium text-text-dim">
           {isLive && runningCount > 0 ? (
-            <Zap size={11} className="text-blue animate-pulse" />
+            <Zap size={11} className="text-blue animate-pulse shrink-0" />
           ) : (
-            <Users size={11} className="text-text-dim/80" />
+            <Users size={11} className="text-text-dim/80 shrink-0" />
           )}
-          {isLive && runningCount > 0
-            ? `${runningCount} agent${runningCount === 1 ? '' : 's'} working`
-            : allDone
-              ? 'Sub-agents'
-              : `${runningCount + failedCount + doneCount}/${delegateRows.length} sub-agents`}
+          <span>Sub-agents</span>
+          <span className="font-mono normal-case text-text-dim/60 tabular-nums">
+            · {delegateRows.length}
+          </span>
         </span>
-        <span className="font-mono normal-case text-text-dim/70 inline-flex items-center gap-2">
-          {doneCount > 0 && (
-            <span className="text-green/80">{doneCount} done</span>
+        <span className="font-mono text-[10px] inline-flex items-center gap-2 normal-case tabular-nums">
+          {runningCount > 0 && <span className="text-blue">{runningCount} working</span>}
+          {doneCount > 0 && <span className="text-green/85">{doneCount} done</span>}
+          {failedCount > 0 && <span className="text-red/85">{failedCount} failed</span>}
+          {allDone && doneCount + failedCount === delegateRows.length && doneCount === delegateRows.length && (
+            <span className="text-text-dim/60">complete</span>
           )}
-          {failedCount > 0 && <span className="text-red/80">{failedCount} failed</span>}
         </span>
       </div>
 
-      <ul className="space-y-1">
+      {/* Shared step description (only when every row carries the same label) */}
+      {sharedLabel && (
+        <div className="px-3 pt-2 pb-1.5 text-[11.5px] text-text/85 line-clamp-2 border-b border-border/20">
+          {sharedLabel}
+        </div>
+      )}
+
+      {/* Rows — neutral container, status conveyed through icon + label only */}
+      <ul className="divide-y divide-border/15">
         {delegateRows.map((row) => {
           const meta = statusMeta(row);
           const Icon = meta.Icon;
@@ -151,27 +195,49 @@ export function AgentTimelineCard({ steps, isLive = false }: AgentTimelineCardPr
             <li
               key={row.id}
               className={cn(
-                'flex items-center gap-2 rounded px-2 py-1 border text-xs',
-                meta.cls,
-                meta.pulse && 'animate-[pulse_2s_ease-in-out_infinite]',
+                'flex items-center gap-2.5 px-3 py-1.5',
+                meta.rowTint,
+                meta.pulse && 'animate-[pulse_2.4s_ease-in-out_infinite]',
               )}
               title={row.label}
             >
-              <Bot size={12} className={cn('shrink-0', meta.spin && 'animate-spin')} />
-              <span className="font-mono shrink-0 font-medium min-w-[5rem]">
-                {row.agentId ?? 'agent?'}
+              {/* Persona pill — neutral identity, NOT colour-coded by status. */}
+              <span className="inline-flex items-center gap-1.5 shrink-0">
+                <Bot
+                  size={11}
+                  className={cn('text-text-dim/70', meta.spin && 'text-blue animate-spin')}
+                />
+                <span className="font-mono text-[10.5px] px-1.5 py-0.5 rounded border border-border/60 bg-bg/40 text-text/90 min-w-[5.25rem] text-center">
+                  {row.agentId ?? 'agent?'}
+                </span>
               </span>
-              <span className="flex-1 text-text/85 line-clamp-1 text-[11px]">
-                {row.label}
+
+              {/* Description — only when not deduped to header. */}
+              {!sharedLabel ? (
+                <span className="flex-1 text-[11px] text-text/80 line-clamp-1 min-w-0">
+                  {row.label}
+                </span>
+              ) : (
+                <span className="flex-1" aria-hidden />
+              )}
+
+              {/* Status — icon + label, fixed minimum width so duration aligns. */}
+              <span
+                className={cn(
+                  'shrink-0 inline-flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide tabular-nums min-w-[5.5rem] justify-end',
+                  meta.text,
+                )}
+              >
+                <Icon size={10} className={cn(meta.spin && 'animate-spin')} />
+                <span>{meta.label}</span>
               </span>
-              <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-medium uppercase">
-                <Icon size={9} className={cn(meta.spin && 'animate-spin')} />
-                {meta.label}
-              </span>
+
+              {/* Duration — fixed-width column so single-digit and m-format
+                  durations line up vertically across rows. */}
               {duration && (
-                <span className="shrink-0 text-[10px] text-text-dim tabular-nums font-mono inline-flex items-center gap-0.5">
-                  <Clock size={9} />
-                  {duration}
+                <span className="shrink-0 inline-flex items-center gap-0.5 text-[10px] font-mono tabular-nums text-text-dim/70 w-[3.5rem] justify-end">
+                  <Clock size={9} className="opacity-70" />
+                  <span>{duration}</span>
                 </span>
               )}
             </li>
@@ -179,8 +245,9 @@ export function AgentTimelineCard({ steps, isLive = false }: AgentTimelineCardPr
         })}
       </ul>
 
+      {/* Live hint — only while at least one delegate is in flight. */}
       {isLive && runningCount > 0 && (
-        <div className="text-[10px] text-text-dim italic pt-0.5">
+        <div className="px-3 py-1.5 border-t border-border/20 text-[10px] text-text-dim/85 italic">
           Each agent runs independently in parallel — expand the plan below to read each
           response when ready.
         </div>

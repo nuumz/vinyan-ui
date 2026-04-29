@@ -111,8 +111,24 @@ export type StreamingStatus =
   | 'running'
   | 'input-required'
   | 'awaiting-approval'
+  | 'awaiting-human-input'
   | 'done'
   | 'error';
+
+/**
+ * Workflow paused on an in-plan `human-input` step. Set by
+ * `workflow:human_input_needed`; cleared by `workflow:human_input_provided`
+ * (the matching response) or terminal task events. Distinct from
+ * `pendingApproval` — that gates the WHOLE plan; this gates ONE step
+ * inside the plan.
+ */
+export interface PendingHumanInput {
+  taskId: string;
+  stepId: string;
+  question: string;
+  /** Wall-clock ms when human_input_needed arrived. */
+  at: number;
+}
 
 export interface PendingApproval {
   taskId: string;
@@ -125,6 +141,18 @@ export interface PendingApproval {
   }>;
   /** Wall-clock ms when plan_ready arrived. Used by the bubble to show elapsed wait. */
   at: number;
+  /**
+   * Approval mode resolved by the backend's `classifyApprovalRequirement`.
+   *   - 'agent-discretion': review window; on timeout Vinyan auto-decides.
+   *   - 'human-required':   only the user can decide; no auto-approve.
+   * Optional for back-compat with older backends — treat absence as
+   * 'agent-discretion' so legacy auto-approval copy still renders.
+   */
+  approvalMode?: 'agent-discretion' | 'human-required';
+  /** Approval window enforced by the backend (ms). UI uses this for the countdown. */
+  timeoutMs?: number;
+  /** False for human-required mode; UI must NOT show auto-approval copy. */
+  autoDecisionAllowed?: boolean;
 }
 
 export interface StreamingTurn {
@@ -173,6 +201,13 @@ export interface StreamingTurn {
   /** Plan/DAG snapshot from `agent:plan_update`. Drives the session setup card. */
   planSteps: PlanStep[];
   /**
+   * O(1) sub-task → step lookup: maps `PlanStep.subTaskId` → `PlanStep.id`.
+   * Kept in sync by `plan_update` (rebuild) and `delegate_dispatched` (upsert)
+   * so `appendContentDelta` can route sub-task deltas without scanning the
+   * full `planSteps` array on every high-frequency stream event.
+   */
+  subTaskIdIndex: Record<string, string>;
+  /**
    * Per-step LLM output, keyed by `PlanStep.id`. Populated by routing
    * `agent:text_delta` and `llm:stream_delta` (kind=content) deltas to the
    * currently-running step rather than blindly appending to `finalContent`.
@@ -207,6 +242,13 @@ export interface StreamingTurn {
    * bubble renders an inline Approve / Reject card.
    */
   pendingApproval?: PendingApproval;
+  /**
+   * Workflow paused on a `human-input` step inside the plan (e.g. "Ask the
+   * user for the topic"). Set by `workflow:human_input_needed`; cleared on
+   * `workflow:human_input_provided` or terminal task events. While set, the
+   * chat bubble renders an inline answer textbox.
+   */
+  pendingHumanInput?: PendingHumanInput;
   /** Internal stream bookkeeping used to de-dupe legacy/rich text events. */
   stream?: StreamState;
   /**
@@ -304,6 +346,7 @@ export function emptyTurn(options: { taskId?: string; startedAt?: number; recove
     finalContent: '',
     reasoning: [],
     planSteps: [],
+    subTaskIdIndex: {},
     stepOutputs: {},
     processLog: [],
   };
@@ -385,13 +428,36 @@ function appendContentDelta(
   turn: StreamingTurn,
   delta: string,
   source: 'legacy' | 'rich',
+  /**
+   * Optional event taskId. When the delta originates from a sub-task
+   * (delegate-sub-agent's own LLM stream), this is the SUB-task's id and
+   * we route the text into the matching plan step's `stepOutputs`. Two
+   * parallel delegates would otherwise both pile their streamed text
+   * into whichever step `currentRunningStepId` returned first — a real
+   * "voices mixed in the chat" bug. Falls back to the running-step
+   * heuristic when undefined / matches the parent turn.
+   */
+  eventTaskId?: string,
 ): StreamingTurn {
   const nextStream: StreamState = {
     ...turn.stream,
     activeSource: source,
     lastLegacyText: source === 'legacy' ? delta : turn.stream?.lastLegacyText,
   };
-  const stepId = currentRunningStepId(turn);
+  // Sub-task subTaskId match — route to the delegate step that owns
+  // this sub-task. PlanStep.subTaskId is populated by
+  // `workflow:delegate_dispatched` so the lookup is deterministic
+  // once the dispatch event has been processed.
+  let stepId: string | undefined;
+  if (eventTaskId && turn.taskId && eventTaskId !== turn.taskId) {
+    stepId = turn.subTaskIdIndex[eventTaskId];
+    // Unknown sub-task (no matching delegate step) — drop the delta
+    // rather than spraying it into the parent's content. Better to lose
+    // the stream preview than to corrupt the running step's text.
+    if (!stepId) return { ...turn, stream: nextStream };
+  } else {
+    stepId = currentRunningStepId(turn);
+  }
   if (stepId) {
     return {
       ...turn,
@@ -461,7 +527,12 @@ export const useStreamingTurnStore = create<StreamingTurnState>((set) => ({
       // its bubble alone. Clears only happen against terminal turns
       // (done/error/input-required).
       const prev = s.bySession[sessionId];
-      if (prev?.status === 'running' || prev?.status === 'awaiting-approval') return s;
+      if (
+        prev?.status === 'running' ||
+        prev?.status === 'awaiting-approval' ||
+        prev?.status === 'awaiting-human-input'
+      )
+        return s;
       const { [sessionId]: _drop, ...rest } = s.bySession;
       return { bySession: rest, taskSessionIndex: removeTaskIndexForSession(s.taskSessionIndex, sessionId) };
     }),
@@ -532,6 +603,17 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
       const input = (p.input as Record<string, unknown> | undefined) ?? {};
       const routing = (p.routing as Record<string, unknown> | undefined) ?? {};
       const id = (input.id as string) ?? turn.taskId;
+      // Sub-task isolation: when a delegate-sub-agent's core-loop emits
+      // its own `task:start` with the SUB-task's id, ignore it for the
+      // parent turn — same-id upsert (preliminary→real model) still
+      // works because we compare to the existing turn.taskId, but a
+      // different id would otherwise overwrite turn.taskId and silently
+      // re-bind every subsequent guarded reducer to the sub-task,
+      // dropping legitimate parent events. The sub-task's events still
+      // route to it via subTaskId-based stream routing below.
+      if (turn.taskId && id && turn.taskId !== id) {
+        return turn;
+      }
       const level = typeof routing.level === 'number' ? (routing.level as number) : undefined;
       const model = typeof routing.model === 'string' ? (routing.model as string) : undefined;
       // Upsert: backend may emit `task:start` twice — once preliminary at
@@ -695,6 +777,21 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
       return { ...turn, contractViolations: { count, policy } };
     }
     case 'agent:plan_update': {
+      // Sub-task scope guard: when a delegate-sub-agent itself runs an
+      // agentic-workflow (e.g. its description matches the
+      // creative-deliverable pre-rule and it spawns its own planner), the
+      // sub-task emits its own `agent:plan_update` with its OWN steps
+      // (step1, step2 of the sub-workflow) for the same sessionId. Without
+      // this guard, the sub-task's snapshot would merge into the parent's
+      // `turn.planSteps` and overwrite the parent's plan in the chat UI —
+      // the user would see the sub-workflow's checklist replace the
+      // intended multi-agent plan. Reject events whose taskId does not
+      // match the active turn's taskId. Pre-task-id events (taskId
+      // missing) still pass through for backward compat.
+      const eventTaskId = typeof p.taskId === 'string' ? (p.taskId as string) : undefined;
+      if (eventTaskId && turn.taskId && eventTaskId !== turn.taskId) {
+        return turn;
+      }
       const raw = Array.isArray(p.steps) ? (p.steps as unknown[]) : [];
       const steps: PlanStep[] = [];
       for (const s of raw) {
@@ -741,7 +838,11 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
         });
       }
       if (steps.length === 0) return turn;
-      return { ...turn, planSteps: steps };
+      const subTaskIdIndex: Record<string, string> = {};
+      for (const step of steps) {
+        if (step.subTaskId) subTaskIdIndex[step.subTaskId] = step.id;
+      }
+      return { ...turn, planSteps: steps, subTaskIdIndex };
     }
     case 'workflow:delegate_dispatched': {
       // Multi-agent UI: pin the resolved agent persona to the matching
@@ -749,6 +850,14 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
       // and agent-timeline card both read PlanStep.agentId, so this lets
       // the UI surface "researcher started" the moment the executor
       // dispatches the delegate, not several seconds later.
+      // Sub-task isolation: only accept events for the active turn's
+      // task (the parent). A nested workflow inside a sub-task would
+      // emit its own `delegate_dispatched` events whose stepIds would
+      // collide with the parent plan's by accident.
+      const eventTaskId = typeof p.taskId === 'string' ? (p.taskId as string) : undefined;
+      if (eventTaskId && turn.taskId && eventTaskId !== turn.taskId) {
+        return turn;
+      }
       const stepId = typeof p.stepId === 'string' ? (p.stepId as string) : undefined;
       if (!stepId) return turn;
       const agentId = typeof p.agentId === 'string' ? (p.agentId as string) : undefined;
@@ -764,7 +873,10 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
             }
           : s,
       );
-      return { ...turn, planSteps: updated };
+      const updatedIndex = subTaskId
+        ? { ...turn.subTaskIdIndex, [subTaskId]: stepId }
+        : turn.subTaskIdIndex;
+      return { ...turn, planSteps: updated, subTaskIdIndex: updatedIndex };
     }
     case 'workflow:delegate_completed': {
       // Multi-agent UI: capture the per-agent output preview so the
@@ -773,6 +885,11 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
       // defensive — `agent:plan_update` will also flip the step but we
       // do not want a brief window where the preview is visible but the
       // step still reads as `running`.
+      // Sub-task isolation: same guard as delegate_dispatched above.
+      const eventTaskId = typeof p.taskId === 'string' ? (p.taskId as string) : undefined;
+      if (eventTaskId && turn.taskId && eventTaskId !== turn.taskId) {
+        return turn;
+      }
       const stepId = typeof p.stepId === 'string' ? (p.stepId as string) : undefined;
       if (!stepId) return turn;
       // Bus payload status uses WorkflowStepResult vocabulary
@@ -834,10 +951,12 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
       const delta = (p.text as string) ?? '';
       if (!delta) return turn;
       if (turn.stream?.activeSource === 'rich') return turn;
-      return appendContentDelta(turn, delta, 'legacy');
+      const legacyTaskId = typeof p.taskId === 'string' ? (p.taskId as string) : undefined;
+      return appendContentDelta(turn, delta, 'legacy', legacyTaskId);
     }
     case 'llm:stream_delta': {
       const kind = p.kind as string | undefined;
+      const richTaskId = typeof p.taskId === 'string' ? (p.taskId as string) : undefined;
       switch (kind) {
         case 'content': {
           const delta = (p.text as string) ?? '';
@@ -849,7 +968,7 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
           if (duplicateLegacyMirror) {
             return { ...turn, stream: { ...turn.stream, activeSource: 'rich' } };
           }
-          return appendContentDelta(turn, delta, 'rich');
+          return appendContentDelta(turn, delta, 'rich', richTaskId);
         }
         case 'thinking': {
           const delta = (p.text as string) ?? '';
@@ -920,6 +1039,7 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
         // show "Approve / Reject" alongside the final answer if the
         // orchestrator races past the gate (e.g. auto-approve timeout).
         pendingApproval: undefined,
+        pendingHumanInput: undefined,
         ...(isFailureStatus
           ? { error: content ?? (result.escalationReason as string | undefined) ?? `Task ${status}` }
           : {}),
@@ -947,6 +1067,7 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
         finishedAt: event.ts,
         error: message,
         pendingApproval: undefined,
+        pendingHumanInput: undefined,
       };
     }
     case 'worker:error': {
@@ -956,6 +1077,7 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
         finishedAt: event.ts,
         error: (p.error as string) ?? 'Worker error',
         pendingApproval: undefined,
+        pendingHumanInput: undefined,
       };
     }
     case 'workflow:plan_ready': {
@@ -964,6 +1086,16 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
       // reject without leaving the chat. Skip the gate when not awaiting —
       // execution is already underway, the steps will arrive via
       // `agent:plan_update`.
+      // Sub-task isolation: a delegate-sub-agent that runs its own
+      // workflow could emit its own `plan_ready` event. The backend
+      // approval gate already bypasses for sub-tasks (`!input.parentTaskId`)
+      // so awaiting=true should never arrive from a sub-task — but if it
+      // does (e.g. legacy backend), still ignore it. The user's pending
+      // approval surface only knows about the parent task.
+      const eventTaskId = typeof p.taskId === 'string' ? (p.taskId as string) : undefined;
+      if (eventTaskId && turn.taskId && eventTaskId !== turn.taskId) {
+        return turn;
+      }
       const awaiting = p.awaitingApproval === true;
       if (!awaiting) return turn;
       const taskId = (p.taskId as string | undefined) ?? turn.taskId;
@@ -982,11 +1114,28 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
           : [];
         steps.push({ id, description, strategy, dependencies: deps });
       }
+      const approvalMode =
+        p.approvalMode === 'human-required' || p.approvalMode === 'agent-discretion'
+          ? (p.approvalMode as 'agent-discretion' | 'human-required')
+          : undefined;
+      const timeoutMs = typeof p.timeoutMs === 'number' ? (p.timeoutMs as number) : undefined;
+      const autoDecisionAllowed =
+        typeof p.autoDecisionAllowed === 'boolean'
+          ? (p.autoDecisionAllowed as boolean)
+          : undefined;
       return {
         ...turn,
         taskId,
         status: 'awaiting-approval',
-        pendingApproval: { taskId, goal, steps, at: event.ts || Date.now() },
+        pendingApproval: {
+          taskId,
+          goal,
+          steps,
+          at: event.ts || Date.now(),
+          ...(approvalMode ? { approvalMode } : {}),
+          ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+          ...(autoDecisionAllowed !== undefined ? { autoDecisionAllowed } : {}),
+        },
       };
     }
     case 'workflow:plan_approved': {
@@ -1009,7 +1158,41 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
         status: 'error',
         finishedAt: event.ts || Date.now(),
         pendingApproval: undefined,
+        pendingHumanInput: undefined,
         error: reason,
+      };
+    }
+    case 'workflow:human_input_needed': {
+      // Workflow paused on a `human-input` step. Distinct from plan-level
+      // approval: the user must SUPPLY a value (e.g. the topic the agents
+      // will compete on), not just approve/reject.
+      const eventTaskId = typeof p.taskId === 'string' ? (p.taskId as string) : undefined;
+      if (eventTaskId && turn.taskId && eventTaskId !== turn.taskId) return turn;
+      const stepId = typeof p.stepId === 'string' ? (p.stepId as string) : undefined;
+      const question = typeof p.question === 'string' ? (p.question as string) : '';
+      if (!stepId) return turn;
+      const taskId = eventTaskId ?? turn.taskId;
+      return {
+        ...turn,
+        taskId,
+        status: 'awaiting-human-input',
+        pendingHumanInput: {
+          taskId,
+          stepId,
+          question,
+          at: event.ts || Date.now(),
+        },
+      };
+    }
+    case 'workflow:human_input_provided': {
+      // Backend received the answer; executor unpaused. Tear down the
+      // input card and return to running state so step_complete /
+      // plan_update events drive the rest of the UI.
+      if (!turn.pendingHumanInput) return turn;
+      return {
+        ...turn,
+        status: 'running',
+        pendingHumanInput: undefined,
       };
     }
     case 'workflow:step_start': {

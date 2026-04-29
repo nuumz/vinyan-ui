@@ -60,3 +60,38 @@ export function useResolveWorkflowApproval() {
     },
   });
 }
+
+interface WorkflowHumanInputArgs {
+  sessionId: string;
+  taskId: string;
+  stepId: string;
+  value: string;
+}
+
+interface WorkflowHumanInputResult {
+  taskId: string;
+  stepId: string;
+  sessionId: string;
+  status: 'recorded';
+}
+
+/**
+ * Provide an answer to a workflow `human-input` step. The backend pauses
+ * the executor on these steps (emits `workflow:human_input_needed`); this
+ * mutation supplies the user's value so the step completes and downstream
+ * dependents continue. The streaming reducer clears `pendingHumanInput`
+ * when the matching `workflow:human_input_provided` event lands.
+ */
+export function useProvideWorkflowHumanInput() {
+  return useMutation<WorkflowHumanInputResult, Error, WorkflowHumanInputArgs>({
+    mutationFn: (args) =>
+      api.provideWorkflowHumanInput(args.sessionId, {
+        taskId: args.taskId,
+        stepId: args.stepId,
+        value: args.value,
+      }),
+    onError: (err) => {
+      toast.apiError(err, { fallback: 'Failed to send your answer' });
+    },
+  });
+}

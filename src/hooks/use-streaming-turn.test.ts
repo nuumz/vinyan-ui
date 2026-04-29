@@ -260,6 +260,56 @@ describe('reduceTurn — workflow approval gate', () => {
     expect(t.pendingApproval?.steps).toHaveLength(1);
   });
 
+  test('workflow:plan_ready stores approvalMode + timeoutMs + autoDecisionAllowed (agent-discretion)', () => {
+    const t = reduceTurn(
+      emptyTurn({ taskId: 'task-1' }),
+      ev('workflow:plan_ready', {
+        taskId: 'task-1',
+        goal: 'do thing',
+        awaitingApproval: true,
+        approvalMode: 'agent-discretion',
+        timeoutMs: 180_000,
+        autoDecisionAllowed: true,
+        steps: [{ id: 's1', description: 'first', strategy: 'auto', dependencies: [] }],
+      }),
+    );
+    expect(t.pendingApproval?.approvalMode).toBe('agent-discretion');
+    expect(t.pendingApproval?.timeoutMs).toBe(180_000);
+    expect(t.pendingApproval?.autoDecisionAllowed).toBe(true);
+  });
+
+  test('workflow:plan_ready stores human-required mode with autoDecisionAllowed=false', () => {
+    const t = reduceTurn(
+      emptyTurn({ taskId: 'task-1' }),
+      ev('workflow:plan_ready', {
+        taskId: 'task-1',
+        goal: 'choose one',
+        awaitingApproval: true,
+        approvalMode: 'human-required',
+        timeoutMs: 180_000,
+        autoDecisionAllowed: false,
+        steps: [{ id: 's1', description: 'choose', strategy: 'human-input', dependencies: [] }],
+      }),
+    );
+    expect(t.pendingApproval?.approvalMode).toBe('human-required');
+    expect(t.pendingApproval?.autoDecisionAllowed).toBe(false);
+  });
+
+  test('workflow:plan_ready without new fields stays back-compatible (mode undefined)', () => {
+    const t = reduceTurn(
+      emptyTurn({ taskId: 'task-1' }),
+      ev('workflow:plan_ready', {
+        taskId: 'task-1',
+        goal: 'do thing',
+        awaitingApproval: true,
+        steps: [{ id: 's1', description: 'first', strategy: 'auto', dependencies: [] }],
+      }),
+    );
+    expect(t.pendingApproval?.approvalMode).toBeUndefined();
+    expect(t.pendingApproval?.timeoutMs).toBeUndefined();
+    expect(t.pendingApproval?.autoDecisionAllowed).toBeUndefined();
+  });
+
   test('workflow:plan_ready without awaitingApproval does NOT set pending approval', () => {
     const start = emptyTurn({ taskId: 'task-1' });
     const t = reduceTurn(start, ev('workflow:plan_ready', { taskId: 'task-1', steps: [], awaitingApproval: false }));
@@ -304,6 +354,78 @@ describe('reduceTurn — workflow approval gate', () => {
     ]);
     expect(t.status).toBe('done');
     expect(t.pendingApproval).toBeUndefined();
+  });
+});
+
+describe('reduceTurn — workflow human-input', () => {
+  test('workflow:human_input_needed sets pendingHumanInput and pauses', () => {
+    const t = reduceTurn(
+      emptyTurn({ taskId: 'task-1' }),
+      ev('workflow:human_input_needed', {
+        taskId: 'task-1',
+        stepId: 'step1',
+        question: 'Ask the user for the topic',
+      }),
+    );
+    expect(t.status).toBe('awaiting-human-input');
+    expect(t.pendingHumanInput?.stepId).toBe('step1');
+    expect(t.pendingHumanInput?.question).toBe('Ask the user for the topic');
+  });
+
+  test('workflow:human_input_provided clears pendingHumanInput and resumes', () => {
+    const t = fold(emptyTurn({ taskId: 'task-1' }), [
+      ev('workflow:human_input_needed', {
+        taskId: 'task-1',
+        stepId: 'step1',
+        question: 'Topic?',
+      }),
+      ev('workflow:human_input_provided', {
+        taskId: 'task-1',
+        stepId: 'step1',
+        value: 'Quantum computing',
+      }),
+    ]);
+    expect(t.status).toBe('running');
+    expect(t.pendingHumanInput).toBeUndefined();
+  });
+
+  test('mismatched taskId is ignored — pendingHumanInput stays unset', () => {
+    const t = reduceTurn(
+      emptyTurn({ taskId: 'task-1' }),
+      ev('workflow:human_input_needed', {
+        taskId: 'other-task',
+        stepId: 'step1',
+        question: 'Topic?',
+      }),
+    );
+    expect(t.status).not.toBe('awaiting-human-input');
+    expect(t.pendingHumanInput).toBeUndefined();
+  });
+
+  test('task:complete clears pendingHumanInput if still set', () => {
+    const t = fold(emptyTurn({ taskId: 'task-1' }), [
+      ev('workflow:human_input_needed', {
+        taskId: 'task-1',
+        stepId: 'step1',
+        question: 'Topic?',
+      }),
+      ev('task:complete', { result: { id: 'task-1', status: 'completed', content: 'done' } }),
+    ]);
+    expect(t.status).toBe('done');
+    expect(t.pendingHumanInput).toBeUndefined();
+  });
+
+  test('plan_rejected clears pendingHumanInput too', () => {
+    const t = fold(emptyTurn({ taskId: 'task-1' }), [
+      ev('workflow:human_input_needed', {
+        taskId: 'task-1',
+        stepId: 'step1',
+        question: 'Topic?',
+      }),
+      ev('workflow:plan_rejected', { reason: 'aborted' }),
+    ]);
+    expect(t.status).toBe('error');
+    expect(t.pendingHumanInput).toBeUndefined();
   });
 });
 
@@ -429,6 +551,216 @@ describe('useStreamingTurnStore — bubble lifecycle', () => {
     const after = useStreamingTurnStore.getState().bySession.s1;
     // No content should be appended via global path
     expect(after?.finalContent).toBe(before?.finalContent);
+  });
+});
+
+describe('reduceTurn — sub-task event isolation', () => {
+  test('task:start with different taskId after parent is set is ignored', () => {
+    // When a delegate-sub-agent runs its own core-loop, it emits a
+    // task:start with the SUB-task's id. Without isolation this would
+    // overwrite turn.taskId and silently re-bind every subsequent guarded
+    // reducer to the sub-task, dropping legitimate parent events.
+    const t = fold(emptyTurn(), [
+      ev('task:start', { input: { id: 'parent-1' }, routing: { level: 2, model: 'sonnet' } }),
+      ev('task:start', {
+        input: { id: 'parent-1-delegate-step2' },
+        routing: { level: 0, model: 'haiku' },
+      }),
+    ]);
+    expect(t.taskId).toBe('parent-1');
+    expect(t.engineId).toBe('sonnet');
+  });
+
+  test('agent:plan_update from sub-task is ignored', () => {
+    // Establish parent task. Then a sub-task's plan_update arrives — must
+    // not corrupt the parent plan.
+    const seeded = fold(emptyTurn(), [
+      ev('task:start', { input: { id: 'parent-1' } }),
+      ev('agent:plan_update', {
+        taskId: 'parent-1',
+        steps: [
+          { id: 'p1', label: 'parent step', status: 'running', strategy: 'llm-reasoning' },
+        ],
+      }),
+    ]);
+    const after = reduceTurn(
+      seeded,
+      ev('agent:plan_update', {
+        taskId: 'parent-1-delegate-x',
+        steps: [
+          { id: 'p1', label: 'sub-task step (corrupting!)', status: 'done' },
+        ],
+      }),
+    );
+    expect(after.planSteps).toHaveLength(1);
+    expect(after.planSteps[0]!.label).toBe('parent step');
+    expect(after.planSteps[0]!.status).toBe('running');
+  });
+
+  test('workflow:plan_ready from sub-task is ignored (no fake pendingApproval)', () => {
+    const seeded = reduceTurn(emptyTurn(), ev('task:start', { input: { id: 'parent-1' } }));
+    const after = reduceTurn(
+      seeded,
+      ev('workflow:plan_ready', {
+        taskId: 'parent-1-delegate-x',
+        goal: 'sub-task goal',
+        steps: [{ id: 's1', description: 'd', strategy: 'llm-reasoning', dependencies: [] }],
+        awaitingApproval: true,
+      }),
+    );
+    expect(after.pendingApproval).toBeUndefined();
+  });
+
+  test('workflow:delegate_dispatched/completed from sub-task is ignored', () => {
+    // Establish parent + delegate plan step. Then a sub-task's delegate
+    // events arrive (recursive workflow inside the sub-task).
+    const seeded = fold(emptyTurn(), [
+      ev('task:start', { input: { id: 'parent-1' } }),
+      ev('agent:plan_update', {
+        taskId: 'parent-1',
+        steps: [
+          {
+            id: 'step2',
+            label: 'researcher',
+            status: 'running',
+            strategy: 'delegate-sub-agent',
+            agentId: 'researcher',
+          },
+        ],
+      }),
+      // Pin the sub-task id on step2 from the legitimate parent dispatch.
+      ev('workflow:delegate_dispatched', {
+        taskId: 'parent-1',
+        stepId: 'step2',
+        agentId: 'researcher',
+        subTaskId: 'parent-1-delegate-step2',
+        stepDescription: 'researcher',
+      }),
+    ]);
+    // Now a NESTED delegate dispatched from the sub-task arrives. Same
+    // stepId by accident (planner inside sub-task happened to use 'step2'
+    // too). Must NOT mutate parent's step2.
+    const after = reduceTurn(
+      seeded,
+      ev('workflow:delegate_dispatched', {
+        taskId: 'parent-1-delegate-step2',
+        stepId: 'step2',
+        agentId: 'philosopher',
+        subTaskId: 'parent-1-delegate-step2-delegate-step2',
+        stepDescription: 'nested delegate',
+      }),
+    );
+    const step = after.planSteps.find((s) => s.id === 'step2')!;
+    expect(step.agentId).toBe('researcher');
+    expect(step.subTaskId).toBe('parent-1-delegate-step2');
+    // Same for delegate_completed.
+    const after2 = reduceTurn(
+      after,
+      ev('workflow:delegate_completed', {
+        taskId: 'parent-1-delegate-step2',
+        stepId: 'step2',
+        agentId: 'philosopher',
+        status: 'completed',
+        outputPreview: 'nested fake',
+      }),
+    );
+    const step2 = after2.planSteps.find((s) => s.id === 'step2')!;
+    expect(step2.outputPreview).toBeUndefined();
+    expect(step2.status).toBe('running');
+  });
+
+  test('llm:stream_delta from sub-task routes to matching delegate step by subTaskId', () => {
+    // Two delegates both running. Sub-task A's content delta should land
+    // in step3's stepOutputs, sub-task B's in step4's — without the
+    // subTaskId routing they'd both pile into "first running step".
+    const seeded = fold(emptyTurn(), [
+      ev('task:start', { input: { id: 'parent-1' } }),
+      ev('agent:plan_update', {
+        taskId: 'parent-1',
+        steps: [
+          {
+            id: 'step3',
+            label: 'researcher',
+            status: 'running',
+            strategy: 'delegate-sub-agent',
+            agentId: 'researcher',
+          },
+          {
+            id: 'step4',
+            label: 'author',
+            status: 'running',
+            strategy: 'delegate-sub-agent',
+            agentId: 'author',
+          },
+        ],
+      }),
+      ev('workflow:delegate_dispatched', {
+        taskId: 'parent-1',
+        stepId: 'step3',
+        agentId: 'researcher',
+        subTaskId: 'parent-1-delegate-step3',
+        stepDescription: 'researcher',
+      }),
+      ev('workflow:delegate_dispatched', {
+        taskId: 'parent-1',
+        stepId: 'step4',
+        agentId: 'author',
+        subTaskId: 'parent-1-delegate-step4',
+        stepDescription: 'author',
+      }),
+    ]);
+    // Researcher streams its answer.
+    const t1 = reduceTurn(
+      seeded,
+      ev('llm:stream_delta', {
+        taskId: 'parent-1-delegate-step3',
+        kind: 'content',
+        text: 'researcher: empirical findings.',
+      }),
+    );
+    // Author streams its answer concurrently.
+    const t2 = reduceTurn(
+      t1,
+      ev('llm:stream_delta', {
+        taskId: 'parent-1-delegate-step4',
+        kind: 'content',
+        text: 'author: a story unfolds.',
+      }),
+    );
+    expect(t2.stepOutputs.step3).toBe('researcher: empirical findings.');
+    expect(t2.stepOutputs.step4).toBe('author: a story unfolds.');
+    // No content leaked into finalContent.
+    expect(t2.finalContent).toBe('');
+  });
+
+  test('llm:stream_delta from unknown sub-task is dropped (not sprayed into running step)', () => {
+    const seeded = fold(emptyTurn(), [
+      ev('task:start', { input: { id: 'parent-1' } }),
+      ev('agent:plan_update', {
+        taskId: 'parent-1',
+        steps: [
+          {
+            id: 'step1',
+            label: 'researcher',
+            status: 'running',
+            strategy: 'delegate-sub-agent',
+            agentId: 'researcher',
+          },
+        ],
+      }),
+    ]);
+    // No delegate_dispatched yet → no subTaskId mapping. An sub-task
+    // delta arrives. Drop it instead of corrupting step1's content.
+    const after = reduceTurn(
+      seeded,
+      ev('llm:stream_delta', {
+        taskId: 'parent-1-delegate-stepZ',
+        kind: 'content',
+        text: 'leaking',
+      }),
+    );
+    expect(after.stepOutputs.step1).toBeUndefined();
+    expect(after.finalContent).toBe('');
   });
 });
 

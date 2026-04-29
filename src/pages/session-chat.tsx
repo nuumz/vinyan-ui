@@ -102,7 +102,8 @@ export default function SessionChat() {
   const sending =
     sendMessage.isPending ||
     turn?.status === 'running' ||
-    turn?.status === 'awaiting-approval';
+    turn?.status === 'awaiting-approval' ||
+    turn?.status === 'awaiting-human-input';
 
   const [input, setInput] = useState('');
   const [lastSent, setLastSent] = useState('');
@@ -116,7 +117,12 @@ export default function SessionChat() {
   // tell how long they've been holding up the run.
   useEffect(() => {
     if (!turn) return;
-    if (turn.status !== 'running' && turn.status !== 'awaiting-approval') return;
+    if (
+      turn.status !== 'running' &&
+      turn.status !== 'awaiting-approval' &&
+      turn.status !== 'awaiting-human-input'
+    )
+      return;
     const t = setInterval(() => setNowMs(Date.now()), 250);
     return () => clearInterval(t);
   }, [turn?.status]);
@@ -233,7 +239,10 @@ export default function SessionChat() {
   const showStreaming =
     !!turn &&
     turn.status !== 'idle' &&
-    (turn.status === 'running' || turn.status === 'awaiting-approval' || !persistedTurnMessage);
+    (turn.status === 'running' ||
+      turn.status === 'awaiting-approval' ||
+      turn.status === 'awaiting-human-input' ||
+      !persistedTurnMessage);
 
   // Clear the streaming bubble exactly when the persisted assistant message
   // arrives in `visibleMessages` — not on a fixed timer. Tying the clear to
