@@ -53,6 +53,29 @@ export function StatusBadge({ status }: { status: string }) {
   return <Badge variant={statusVariantMap[status] ?? 'neutral'}>{status}</Badge>;
 }
 
+/**
+ * StatusBadge variant that swaps the lifecycle chip for a distinct
+ * "running" chip in accent colors when `live` is true. Activity (running)
+ * dominates the visual since "is this session doing work right now" is the
+ * primary question — lifecycleState is implied (only an active session can
+ * be running). When idle, falls back to the regular lifecycle chip.
+ */
+export function LiveStatusBadge({ status, live }: { status: string; live?: boolean }) {
+  if (live) {
+    return (
+      <Badge variant="info" className="gap-1.5">
+        <span className="relative inline-flex h-1.5 w-1.5 shrink-0" aria-hidden>
+          <span className="absolute inset-0 rounded-full bg-accent opacity-75 animate-ping" />
+          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-accent" />
+        </span>
+        running
+      </Badge>
+    );
+  }
+  const variant = statusVariantMap[status] ?? 'neutral';
+  return <Badge variant={variant}>{status}</Badge>;
+}
+
 export function EventBadge({ event }: { event: string }) {
   const variant: BadgeVariant = event.includes('error') || event.includes('fail')
     ? 'error'

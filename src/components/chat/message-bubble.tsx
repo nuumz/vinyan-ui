@@ -7,8 +7,12 @@ import {
   HelpCircle,
   Layers,
   Hash,
+  MessageCircle,
   ShieldCheck,
   User,
+  Workflow,
+  Wrench,
+  Zap,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { ConversationEntry } from '@/lib/api-client';
@@ -58,6 +62,52 @@ function formatDuration(ms: number): string {
   const min = Math.floor(ms / 60_000);
   const sec = Math.floor((ms % 60_000) / 1000);
   return `${min}m${sec}s`;
+}
+
+/**
+ * Visual treatment for the orchestrator's chosen `approach`. Surfaces
+ * routing strategy as a chip so users can see at a glance whether the
+ * response came from a real workflow run or a single conversational turn.
+ * Critical for catching hallucinated-delegation cases (session 44c83a53)
+ * where coordinator promises delegation but routing chose
+ * `conversational-shortcircuit` and no sub-agents ever ran.
+ */
+function approachChipMeta(approach: string): {
+  label: string;
+  Icon: typeof Zap;
+  cls: string;
+  title: string;
+} {
+  if (approach === 'conversational-shortcircuit' || approach === 'conversational') {
+    return {
+      label: 'Conversational',
+      Icon: MessageCircle,
+      cls: 'bg-yellow/10 text-yellow border-yellow/25',
+      title: 'Single LLM turn — no sub-agents dispatched, no tools executed',
+    };
+  }
+  if (approach === 'direct-tool') {
+    return {
+      label: 'Direct tool',
+      Icon: Wrench,
+      cls: 'bg-purple/10 text-purple border-purple/25',
+      title: 'Routed to a single tool call, no workflow planning',
+    };
+  }
+  if (approach === 'agentic-workflow' || approach.startsWith('agentic')) {
+    return {
+      label: 'Workflow',
+      Icon: Workflow,
+      cls: 'bg-blue/10 text-blue border-blue/25',
+      title: 'Multi-step agentic workflow with delegation capability',
+    };
+  }
+  return {
+    label: approach,
+    Icon: Zap,
+    cls: 'bg-blue/10 text-blue border-blue/25',
+    title: 'Routing approach',
+  };
 }
 
 export function MessageBubble({ message }: { message: ConversationEntry }) {
@@ -144,6 +194,23 @@ export function MessageBubble({ message }: { message: ConversationEntry }) {
                 {trace.workerId}
               </span>
             )}
+            {trace.approach &&
+              (() => {
+                const meta = approachChipMeta(trace.approach);
+                const Icon = meta.Icon;
+                return (
+                  <span
+                    className={cn(
+                      'inline-flex items-center gap-1 px-1.5 py-0.5 rounded border font-medium',
+                      meta.cls,
+                    )}
+                    title={meta.title}
+                  >
+                    <Icon size={10} />
+                    {meta.label}
+                  </span>
+                );
+              })()}
             <span
               className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-bg/50 text-text-dim border border-border/70"
               title="Model"

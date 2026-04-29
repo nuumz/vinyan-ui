@@ -308,8 +308,16 @@ export interface Session {
 
 export type SessionListState = 'active' | 'archived' | 'deleted' | 'all';
 
+/**
+ * Origin filter — when omitted the backend defaults to `ui`, which hides
+ * sessions created by external clients (curl, scripts, MCP). Pass `'all'`
+ * to include those.
+ */
+export type SessionListSource = 'ui' | 'api' | 'all';
+
 export interface ListSessionsParams {
   state?: SessionListState;
+  source?: SessionListSource;
   search?: string;
   limit?: number;
   offset?: number;
@@ -955,6 +963,7 @@ export const api = {
   getSessions: (params: ListSessionsParams = {}) => {
     const qs = new URLSearchParams();
     if (params.state) qs.set('state', params.state);
+    if (params.source) qs.set('source', params.source);
     if (params.search) qs.set('search', params.search);
     if (typeof params.limit === 'number') qs.set('limit', String(params.limit));
     if (typeof params.offset === 'number') qs.set('offset', String(params.offset));

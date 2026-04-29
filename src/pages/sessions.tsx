@@ -21,9 +21,13 @@ import {
   useUnarchiveSession,
   useUpdateSession,
 } from '@/hooks/use-sessions';
-import type { Session, SessionListState } from '@/lib/api-client';
+import type {
+  Session,
+  SessionLifecycleState,
+  SessionListSource,
+  SessionListState,
+} from '@/lib/api-client';
 import { ActionMenu, type ActionMenuItem } from '@/components/ui/action-menu';
-import { StatusBadge } from '@/components/ui/badge';
 import { ConfirmDialog } from '@/components/ui/confirm';
 import { ErrorState } from '@/components/ui/error-state';
 import { PageHeader } from '@/components/ui/page-header';
@@ -33,7 +37,7 @@ import {
 } from '@/components/ui/session-metadata-dialog';
 import { TableSkeleton } from '@/components/ui/skeleton';
 import { Tabs } from '@/components/ui/tabs';
-import { timeAgo } from '@/lib/utils';
+import { cn, timeAgo } from '@/lib/utils';
 
 interface DialogState {
   // Dialog is now edit-only — create sessions navigate straight into
@@ -54,14 +58,26 @@ const TAB_OPTIONS: Array<{ id: SessionListState; label: string }> = [
   { id: 'deleted', label: 'Trash' },
 ];
 
+// Source segmented control. Default is 'all' so sessions created by external
+// clients (curl, MCP, scripts) are discoverable — earlier the default was
+// `ui` and users reported "session not in list" when they had created one
+// via API and tried to find it (incident: 2026-04-28 session 44c83a53 area).
+// The source chip on each row still labels origin so the list stays scannable.
+const SOURCE_OPTIONS: Array<{ id: SessionListSource; label: string }> = [
+  { id: 'all', label: 'All sources' },
+  { id: 'ui', label: 'UI' },
+  { id: 'api', label: 'API' },
+];
+
 export default function Sessions() {
   const [tab, setTab] = useState<SessionListState>('active');
+  const [source, setSource] = useState<SessionListSource>('all');
   const [search, setSearch] = useState('');
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
   const navigate = useNavigate();
 
-  const sessionsQuery = useSessionsList({ state: tab, search });
+  const sessionsQuery = useSessionsList({ state: tab, source, search });
   const sessions = sessionsQuery.data ?? [];
 
   const createSession = useCreateSession();
@@ -138,7 +154,10 @@ export default function Sessions() {
   const description = (() => {
     if (sessionsQuery.isLoading) return 'Loading…';
     if (sessionsQuery.isError) return 'Could not load sessions — see panel below';
-    return `${sessions.length} ${tab === 'deleted' ? 'in trash' : tab}`;
+    const noun = sessions.length === 1 ? 'session' : 'sessions';
+    const scope =
+      tab === 'deleted' ? 'in trash' : tab === 'archived' ? 'archived' : 'active';
+    return `${sessions.length} ${scope} ${noun}`;
   })();
 
   return (
@@ -170,24 +189,33 @@ export default function Sessions() {
         }
       />
 
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <Tabs
           items={TAB_OPTIONS.map((t) => ({ id: t.id, label: t.label }))}
           active={tab}
           onChange={(id) => setTab(id)}
+          className="flex-1"
         />
-        <div className="relative w-full sm:w-72">
-          <Search
-            size={12}
-            className="absolute top-1/2 left-2 -translate-y-1/2 text-text-dim pointer-events-none"
+        <div className="flex items-center gap-2 sm:pb-1">
+          <Tabs
+            items={SOURCE_OPTIONS.map((s) => ({ id: s.id, label: s.label }))}
+            active={source}
+            onChange={(id) => setSource(id)}
+            variant="pills"
           />
-          <input
-            type="search"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search title, description, id…"
-            className="w-full pl-7 pr-2 py-1.5 text-xs rounded bg-bg border border-border focus:outline-none focus:ring-1 focus:ring-accent/40"
-          />
+          <div className="relative w-full sm:w-56">
+            <Search
+              size={12}
+              className="absolute top-1/2 left-2 -translate-y-1/2 text-text-dim pointer-events-none"
+            />
+            <input
+              type="search"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search title, description, id…"
+              className="w-full pl-7 pr-2 py-1.5 text-xs rounded bg-bg border border-border focus:outline-none focus:ring-1 focus:ring-accent/40 placeholder:text-text-dim/70"
+            />
+          </div>
         </div>
       </div>
 
@@ -201,60 +229,65 @@ export default function Sessions() {
             retrying={sessionsQuery.isFetching}
           />
         </div>
+      ) : sorted.length === 0 ? (
+        <div className="bg-surface rounded-lg border border-border py-16 flex flex-col items-center gap-3">
+          <MessageSquare size={32} className="text-text-dim/50" />
+          <div className="text-sm text-text-dim">
+            {search.length > 0
+              ? 'No sessions match this search'
+              : tab === 'deleted'
+                ? 'Trash is empty'
+                : tab === 'archived'
+                  ? 'No archived sessions'
+                  : 'No active sessions'}
+          </div>
+          {tab === 'active' && search.length === 0 && (
+            <button
+              type="button"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded font-medium text-sm bg-accent text-white hover:bg-accent/80 disabled:opacity-50 transition-colors"
+              onClick={handleCreate}
+              disabled={createSession.isPending}
+            >
+              <Plus size={14} />
+              Start a conversation
+            </button>
+          )}
+        </div>
       ) : (
         <div className="bg-surface rounded-lg border border-border overflow-hidden">
-          {sorted.length === 0 ? (
-            <div className="py-12 flex flex-col items-center gap-3">
-              <MessageSquare size={32} className="text-text-dim/50" />
-              <div className="text-sm text-text-dim">
-                {search.length > 0
-                  ? 'No sessions match this search'
-                  : tab === 'deleted'
-                    ? 'Trash is empty'
-                    : tab === 'archived'
-                      ? 'No archived sessions'
-                      : 'No active sessions'}
-              </div>
-              {tab === 'active' && search.length === 0 && (
-                <button
-                  type="button"
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded font-medium text-sm bg-accent text-white hover:bg-accent/80 disabled:opacity-50 transition-colors"
-                  onClick={handleCreate}
-                  disabled={createSession.isPending}
-                >
-                  <Plus size={14} />
-                  Start a conversation
-                </button>
-              )}
-            </div>
-          ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border text-left text-text-dim text-xs">
-                  <th className="px-4 py-2">Session</th>
-                  <th className="px-4 py-2">Status</th>
-                  <th className="px-4 py-2 text-right">Tasks</th>
-                  <th className="px-4 py-2">Updated</th>
-                  <th className="px-4 py-2 text-right" />
-                </tr>
-              </thead>
-              <tbody>
-                {sorted.map((s) => (
-                  <SessionRow
-                    key={s.id}
-                    session={s}
-                    onOpen={() => navigate(`/sessions/${s.id}`)}
-                    onEdit={() => setDialog({ mode: 'edit', session: s })}
-                    onArchive={() => setConfirm({ kind: 'archive', session: s })}
-                    onUnarchive={() => setConfirm({ kind: 'unarchive', session: s })}
-                    onDelete={() => setConfirm({ kind: 'delete', session: s })}
-                    onRestore={() => setConfirm({ kind: 'restore', session: s })}
-                    onCompact={() => setConfirm({ kind: 'compact', session: s })}
-                  />
-                ))}
-              </tbody>
-            </table>
-          )}
+          <table className="w-full text-sm border-separate border-spacing-0">
+            <colgroup>
+              <col />
+              <col className="w-24" />
+              <col className="w-28" />
+              <col className="w-20" />
+              <col className="w-12" />
+            </colgroup>
+            <thead>
+              <tr className="text-left text-text-dim text-[10px] font-medium uppercase tracking-wider">
+                <th className="px-4 py-2.5 border-b border-border">Session</th>
+                <th className="px-3 py-2.5 border-b border-border text-right">Tasks</th>
+                <th className="px-3 py-2.5 border-b border-border">Status</th>
+                <th className="px-3 py-2.5 border-b border-border text-right">Updated</th>
+                <th className="px-2 py-2.5 border-b border-border" />
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((s) => (
+                <SessionRow
+                  key={s.id}
+                  session={s}
+                  onOpen={() => navigate(`/sessions/${s.id}`)}
+                  onEdit={() => setDialog({ mode: 'edit', session: s })}
+                  onArchive={() => setConfirm({ kind: 'archive', session: s })}
+                  onUnarchive={() => setConfirm({ kind: 'unarchive', session: s })}
+                  onDelete={() => setConfirm({ kind: 'delete', session: s })}
+                  onRestore={() => setConfirm({ kind: 'restore', session: s })}
+                  onCompact={() => setConfirm({ kind: 'compact', session: s })}
+                />
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
 
@@ -404,69 +437,127 @@ function SessionRow({
     items.push({ label: 'Restore', icon: RotateCcw, onClick: onRestore });
   }
 
+  const isLive = session.activityState === 'in-progress';
+  const shortId = session.id.slice(0, 8);
+  const hasRunning = session.runningTaskCount > 0;
+
   return (
     <tr
-      className="border-b border-border/50 hover:bg-white/2 cursor-pointer transition-colors"
+      className="group cursor-pointer transition-colors hover:bg-white/[0.03]"
       onClick={onOpen}
     >
-      <td className="px-4 py-2">
-        <div className="space-y-0.5">
+      <td className="relative px-4 py-3 border-b border-border/40 align-middle max-w-0">
+        <span
+          className={cn(
+            'absolute left-0 top-2 bottom-2 w-[2px] rounded-r-full transition-opacity',
+            isLive ? 'bg-accent opacity-100' : 'opacity-0',
+          )}
+          aria-hidden
+        />
+        <div className="flex items-baseline gap-2 min-w-0">
           <Link
             to={`/sessions/${session.id}`}
             onClick={(e) => e.stopPropagation()}
-            className="font-medium text-sm text-text hover:text-accent"
+            className="font-medium text-sm text-text hover:text-accent truncate shrink-0 max-w-[40%]"
           >
-            {session.title || `Session ${session.id.slice(0, 8)}`}
+            {session.title || `Session ${shortId}`}
           </Link>
+          <span className="text-xs text-text-dim/70 lowercase shrink-0">{session.source}</span>
           {session.description && (
-            <div className="text-xs text-text-dim line-clamp-1 max-w-xl">
-              {session.description}
-            </div>
+            <>
+              <span className="text-text-dim/30 shrink-0">·</span>
+              <span className="text-xs text-text-dim truncate min-w-0">
+                {session.description}
+              </span>
+            </>
           )}
-          <div className="text-[10px] text-text-dim font-mono">
-            {session.id} · {session.source}
-          </div>
+          <span
+            className="font-mono text-[10px] text-text-dim/60 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 ml-auto"
+            title={session.id}
+          >
+            {shortId}
+          </span>
         </div>
       </td>
-      <td className="px-4 py-2">
-        <div className="flex flex-col gap-1 items-start">
-          {/*
-            Backend derives `lifecycleState` (priority-resolved single label
-            including archived/trashed). Render that directly instead of
-            stacking raw `status` + ad-hoc text below — clearer and keeps
-            visual contract owned by one place.
-          */}
-          <StatusBadge status={session.lifecycleState} />
-          {session.activityState === 'in-progress' && (
-            <span className="inline-flex items-center gap-1 text-[10px] text-accent">
-              <span className="h-1.5 w-1.5 rounded-full bg-accent animate-pulse" />
-              in-progress
-            </span>
-          )}
-        </div>
+      <td className="px-3 py-3 border-b border-border/40 text-right tabular-nums align-middle">
+        {session.taskCount > 0 ? (
+          <span
+            className="inline-flex items-baseline text-xs"
+            title={
+              hasRunning
+                ? `${session.runningTaskCount} of ${session.taskCount} task${session.taskCount === 1 ? '' : 's'} running`
+                : `${session.taskCount} task${session.taskCount === 1 ? '' : 's'}`
+            }
+          >
+            {hasRunning ? (
+              <>
+                <span className="text-accent font-medium">{session.runningTaskCount}</span>
+                <span className="text-text-dim/60 mx-0.5">/</span>
+                <span className="text-text-dim">{session.taskCount}</span>
+              </>
+            ) : (
+              <span className="text-text-dim">{session.taskCount}</span>
+            )}
+          </span>
+        ) : (
+          <span className="text-xs text-text-dim/40">—</span>
+        )}
       </td>
-      <td className="px-4 py-2 tabular-nums text-right">
-        <div className="inline-flex items-baseline gap-1">
-          <span>{session.taskCount}</span>
-          {session.runningTaskCount > 0 && (
-            <span
-              className="text-[10px] text-accent"
-              title={`${session.runningTaskCount} task${session.runningTaskCount === 1 ? '' : 's'} pending or running`}
-            >
-              ({session.runningTaskCount})
-            </span>
-          )}
-        </div>
+      <td className="px-3 py-3 border-b border-border/40 align-middle">
+        <StatusDot state={session.lifecycleState} live={isLive} />
       </td>
       <td
-        className="px-4 py-2 text-xs text-text-dim"
+        className="px-3 py-3 border-b border-border/40 text-right text-xs text-text-dim tabular-nums align-middle"
         title={new Date(session.updatedAt).toLocaleString()}
       >
         {timeAgo(session.updatedAt)}
       </td>
-      <td className="px-4 py-2 text-right" onClick={(e) => e.stopPropagation()}>
+      <td
+        className="px-2 py-3 border-b border-border/40 text-right align-middle"
+        onClick={(e) => e.stopPropagation()}
+      >
         <ActionMenu items={items} />
       </td>
     </tr>
+  );
+}
+
+const STATE_DOT: Record<SessionLifecycleState, string> = {
+  active: 'bg-text-dim/40',
+  suspended: 'bg-yellow',
+  compacted: 'bg-accent',
+  closed: 'bg-text-dim/40',
+  archived: 'bg-text-dim/40',
+  trashed: 'bg-red',
+};
+
+const STATE_TEXT: Record<SessionLifecycleState, string> = {
+  active: 'text-text-dim/70',
+  suspended: 'text-yellow',
+  compacted: 'text-accent',
+  closed: 'text-text-dim/70',
+  archived: 'text-text-dim/70',
+  trashed: 'text-red',
+};
+
+function StatusDot({ state, live }: { state: SessionLifecycleState; live?: boolean }) {
+  if (live) {
+    return (
+      <span className="inline-flex items-center gap-2 text-xs">
+        <span className="relative inline-flex h-1.5 w-1.5 shrink-0" aria-hidden>
+          <span className="absolute inset-0 rounded-full bg-accent opacity-75 animate-ping" />
+          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-accent" />
+        </span>
+        <span className="text-accent">running</span>
+      </span>
+    );
+  }
+  // active = the default/normal state — render the dot + label dimmed so the
+  // eye skips them. Notable states (suspended/compacted/trashed) keep color.
+  return (
+    <span className="inline-flex items-center gap-2 text-xs">
+      <span className={cn('inline-flex h-1.5 w-1.5 shrink-0 rounded-full', STATE_DOT[state])} aria-hidden />
+      <span className={STATE_TEXT[state]}>{state}</span>
+    </span>
   );
 }

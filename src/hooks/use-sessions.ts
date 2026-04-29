@@ -26,13 +26,15 @@ export function useSessions() {
  */
 export function useSessionsList(params: ListSessionsParams = {}) {
   const state: SessionListState = params.state ?? 'active';
+  const source = params.source ?? 'all';
   const search = params.search?.trim() ?? '';
   return useQuery<Session[]>({
-    queryKey: qk.sessionsList(state, search),
+    queryKey: qk.sessionsList(state, source, search),
     queryFn: () =>
       api
         .getSessions({
           state,
+          source,
           ...(search.length > 0 ? { search } : {}),
           ...(typeof params.limit === 'number' ? { limit: params.limit } : {}),
           ...(typeof params.offset === 'number' ? { offset: params.offset } : {}),

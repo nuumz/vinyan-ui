@@ -256,7 +256,7 @@ export default function SessionChat() {
         description={session?.description ?? null}
         archived={session?.archivedAt != null}
         deleted={session?.deletedAt != null}
-        canCompact={(session?.taskCount ?? 0) > 0 && session?.status === 'active'}
+        canCompact={(session?.taskCount ?? 0) >= 3 && session?.status === 'active'}
         onSaveTitle={(next) => {
           if (!sessionId) return;
           updateSession.mutate({ id: sessionId, patch: { title: next } });
