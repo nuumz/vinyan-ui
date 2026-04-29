@@ -6,6 +6,9 @@ import { useFallbackInterval } from './use-fallback-interval';
 export interface TraceFilters {
   limit?: number;
   outcome?: string;
+  /** Canonical fingerprint filter — drives the agent-drawer deep-link. */
+  taskSignature?: string;
+  /** Legacy alias forwarded to the server unchanged. */
   taskType?: string;
 }
 

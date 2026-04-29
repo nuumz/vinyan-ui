@@ -19,7 +19,11 @@ export const qk = {
   approvals: ['approvals'] as const,
   agents: ['agents'] as const,
   agent: (id: string) => ['agents', id] as const,
-  skills: (status?: string) => (status ? (['skills', status] as const) : (['skills'] as const)),
+  skills: (filter?: { kind?: string; agentId?: string; status?: string }) => {
+    if (!filter) return ['skills'] as const;
+    return ['skills', filter.kind ?? null, filter.agentId ?? null, filter.status ?? null] as const;
+  },
+  skill: (id: string) => ['skills', 'detail', id] as const,
   patterns: ['patterns'] as const,
   doctor: (deep: boolean) => ['doctor', deep] as const,
   config: ['config'] as const,

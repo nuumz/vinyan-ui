@@ -219,6 +219,51 @@ export interface CachedSkill {
   agentId?: string | null;
 }
 
+// ── Unified Skill Library ──────────────────────────────────────────
+// Mirrors `src/api/skill-catalog-service.ts` on the backend. The /skills
+// page renders these directly; CRUD endpoints accept the simple write shape.
+
+export type SkillCatalogKind = 'simple' | 'heavy' | 'cached';
+
+export type SimpleSkillScope = 'user' | 'project' | 'user-agent' | 'project-agent';
+
+export interface SkillCatalogItem {
+  id: string;
+  kind: SkillCatalogKind;
+  name: string;
+  description: string;
+  /** Simple: scope. Heavy: 'artifact-store'. Cached: 'cached_skills'. */
+  source: SimpleSkillScope | 'artifact-store' | 'cached_skills';
+  scope?: SimpleSkillScope;
+  agentId?: string;
+  editable: boolean;
+  path?: string;
+  status?: string;
+  trustTier?: string;
+  successRate?: number;
+  usageCount?: number;
+  contentHash?: string;
+  lastUpdated?: number;
+}
+
+export interface SkillCatalogDetail extends SkillCatalogItem {
+  body?: string;
+  approach?: string;
+  heavyFrontmatter?: Record<string, unknown>;
+  files?: string[];
+  probationRemaining?: number;
+  verificationProfile?: string;
+  riskAtCreation?: number;
+}
+
+export interface SimpleSkillWriteBody {
+  name: string;
+  description: string;
+  body: string;
+  scope?: SimpleSkillScope;
+  agentId?: string;
+}
+
 export interface ExtractedPattern {
   id: string;
   type: 'anti-pattern' | 'success-pattern' | 'worker-performance' | 'decomposition-pattern';
@@ -625,6 +670,137 @@ export interface SSEEvent {
   ts: number;
 }
 
+// ── External Coding CLI types ────────────────────────────────────────────
+
+export type CodingCliProviderId = 'claude-code' | 'github-copilot';
+
+export interface CodingCliCapabilities {
+  headless: boolean;
+  interactive: boolean;
+  streamProtocol: boolean;
+  resume: boolean;
+  nativeHooks: boolean;
+  jsonOutput: boolean;
+  approvalPrompts: boolean;
+  toolEvents: boolean;
+  fileEditEvents: boolean;
+  transcriptAccess: boolean;
+  statusCommand: boolean;
+  cancelSupport: boolean;
+}
+
+export interface CodingCliDetectionResponse {
+  providerId: CodingCliProviderId;
+  available: boolean;
+  binaryPath: string | null;
+  version: string | null;
+  variant: 'full' | 'limited' | 'unknown';
+  notes: string[];
+  capabilities: CodingCliCapabilities;
+}
+
+export interface CodingCliTaskRequest {
+  taskId: string;
+  rootGoal: string;
+  cwd: string;
+  sessionId?: string;
+  providerId?: CodingCliProviderId;
+  mode?: 'headless' | 'interactive' | 'auto';
+  allowedScope?: string[];
+  forbiddenScope?: string[];
+  approvalPolicy?: {
+    autoApproveReadOnly?: boolean;
+    requireHumanForWrites?: boolean;
+    requireHumanForShell?: boolean;
+    requireHumanForGit?: boolean;
+    allowDangerousSkipPermissions?: boolean;
+  };
+  model?: string;
+  notes?: string;
+  timeoutMs?: number;
+  idleTimeoutMs?: number;
+  maxOutputBytes?: number;
+  correlationId?: string;
+}
+
+export interface CodingCliResultClaim {
+  status: 'completed' | 'failed' | 'blocked' | 'needs_approval' | 'partial';
+  providerId: CodingCliProviderId;
+  summary: string;
+  changedFiles: string[];
+  commandsRun: string[];
+  testsRun: string[];
+  decisions: Array<{ decision: string; reason: string; alternatives: string[] }>;
+  verification: { claimedPassed: boolean; details: string };
+  blockers: string[];
+  requiresHumanReview: boolean;
+}
+
+export interface CodingCliVerificationOutcome {
+  passed: boolean;
+  oracleVerdicts: Array<{ name: string; ok: boolean; detail?: string }>;
+  testResults?: { passed: number; failed: number; skipped: number };
+  predictionError?: { claimed: boolean; actual: boolean; reason: string };
+  reason?: string;
+}
+
+export interface CodingCliLiveSession {
+  id: string;
+  taskId: string;
+  providerId: CodingCliProviderId;
+  state: string;
+  capabilities: CodingCliCapabilities;
+  filesChanged: string[];
+  commandsRequested?: string[];
+  result?: CodingCliResultClaim | null;
+  timings: {
+    createdAt: number;
+    startedAt: number | null;
+    endedAt: number | null;
+    lastOutputAt: number | null;
+    lastHookAt: number | null;
+  };
+}
+
+export interface CodingCliPersistedSession {
+  id: string;
+  taskId: string;
+  sessionId: string | null;
+  providerId: CodingCliProviderId;
+  binaryPath: string;
+  binaryVersion: string | null;
+  capabilities: CodingCliCapabilities;
+  cwd: string;
+  pid: number | null;
+  state: string;
+  startedAt: number;
+  updatedAt: number;
+  endedAt: number | null;
+  filesChanged: string[];
+  commandsRequested: string[];
+  finalResult: CodingCliResultClaim | null;
+}
+
+export interface CodingCliPersistedEvent {
+  id: string;
+  coding_cli_session_id: string;
+  task_id: string;
+  seq: number;
+  event_type: string;
+  payload_json: string;
+  ts: number;
+}
+
+export interface CodingCliCreateSessionResponse {
+  sessionId: string;
+  state: string;
+  providerId?: CodingCliProviderId;
+  capabilities?: CodingCliCapabilities;
+  mode?: 'headless' | 'interactive';
+  claim?: CodingCliResultClaim | null;
+  verification?: CodingCliVerificationOutcome;
+}
+
 export interface ConversationEntry {
   role: 'user' | 'assistant';
   content: string;
@@ -955,8 +1131,59 @@ export const api = {
   getEconomy: () => fetchJSON<EconomyResponse>('/economy'),
   getAgents: () => fetchJSON<{ agents: AgentListEntry[] }>('/agents'),
   getAgent: (id: string) => fetchJSON<AgentDetail>(`/agents/${encodeURIComponent(id)}`),
-  getSkills: (status?: 'active' | 'probation' | 'demoted') =>
-    fetchJSON<{ skills: CachedSkill[] }>(status ? `/skills?status=${status}` : '/skills'),
+  /**
+   * Export a single agent's full context (episodes + proficiencies + lessons)
+   * as a JSON snapshot. Used by the Agent drawer "Export context" button so
+   * an operator can take a backup before any reset / migration.
+   */
+  exportAgentContext: (id: string) =>
+    fetchJSON<{ agentId: string; context: AgentContextDetail; exportedAt: number }>(
+      `/agents/${encodeURIComponent(id)}/context/export`,
+    ),
+  /**
+   * Operator action — remove ONE proficiency entry from an agent's context
+   * by task signature. Idempotent. Audit logged on the server.
+   */
+  resetProficiency: (id: string, signature: string, reason?: string) =>
+    fetchJSON<{ ok: true; removed: boolean; signature: string; remaining?: number }>(
+      `/agents/${encodeURIComponent(id)}/proficiencies/reset`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ signature, ...(reason ? { reason } : {}) }),
+      },
+    ),
+  getSkills: (filter?: { kind?: SkillCatalogKind; agentId?: string; status?: 'active' | 'probation' | 'demoted' }) => {
+    const params = new URLSearchParams();
+    if (filter?.kind) params.set('kind', filter.kind);
+    if (filter?.agentId) params.set('agentId', filter.agentId);
+    if (filter?.status) params.set('status', filter.status);
+    const qs = params.toString();
+    // Server always returns `items[]`; legacy `skills[]` mirror is kept for
+    // back-compat but the UI consumes the unified shape.
+    return fetchJSON<{ items?: SkillCatalogItem[]; skills: SkillCatalogItem[] | CachedSkill[] }>(
+      qs ? `/skills?${qs}` : '/skills',
+    );
+  },
+  getSkill: (id: string) => fetchJSON<SkillCatalogDetail>(`/skills/${encodeURIComponent(id)}`),
+  createSkill: (body: SimpleSkillWriteBody) =>
+    fetchJSON<{ id: string; path: string }>('/skills', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updateSkill: (id: string, body: SimpleSkillWriteBody) =>
+    fetchJSON<{ id: string }>(`/skills/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  deleteSkill: (id: string) =>
+    // 204 No Content — fetchJSON expects parseable JSON, so use a typed `as`.
+    fetch(`${API}/skills/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    }).then((res) => {
+      if (!res.ok) throw new Error(`DELETE /skills failed: ${res.status}`);
+      return { ok: true } as const;
+    }),
   getPatterns: () => fetchJSON<{ patterns: ExtractedPattern[] }>('/patterns'),
   getDoctor: (deep = false) => fetchJSON<DoctorReport>(`/doctor${deep ? '?deep=true' : ''}`),
   getConfig: () => fetchJSON<ConfigResponse>('/config'),
@@ -972,10 +1199,18 @@ export const api = {
     fetchJSON<SleepCycleTriggerResult>('/sleep-cycle/trigger', { method: 'POST' }),
   getShadow: (status?: ShadowStatus) =>
     fetchJSON<ShadowReport>(status ? `/shadow?status=${status}` : '/shadow'),
-  getTraces: (opts?: { limit?: number; outcome?: string; taskType?: string }) => {
+  getTraces: (opts?: {
+    limit?: number;
+    outcome?: string;
+    /** Canonical fingerprint filter — `actionVerb::framework::blastRadius`. */
+    taskSignature?: string;
+    /** Legacy alias — kept for back-compat. Server resolves either to the same column. */
+    taskType?: string;
+  }) => {
     const params = new URLSearchParams();
     if (opts?.limit) params.set('limit', String(opts.limit));
     if (opts?.outcome) params.set('outcome', opts.outcome);
+    if (opts?.taskSignature) params.set('taskSignature', opts.taskSignature);
     if (opts?.taskType) params.set('taskType', opts.taskType);
     const qs = params.toString();
     return fetchJSON<TracesResponse>(qs ? `/traces?${qs}` : '/traces');
@@ -1064,14 +1299,39 @@ export const api = {
    * card in the chat: feeds the same `reduceTurn` reducer used live to
    * reconstruct the Phase / Tools / Oracles / Plan / Reasoning surfaces.
    *
+   * Defaults to `includeDescendants: true` so the Multi-agent card's
+   * expandable rows can render per-sub-agent tool calls — sub-agent
+   * `agent:tool_*` events live under the child's own `taskId`, which the
+   * legacy per-task filter does not return. The reducer's `subTaskIdIndex`
+   * map (built from `workflow:delegate_dispatched.subTaskId`) pins those
+   * events to the correct delegate row, so no consumer-side aggregation
+   * is required. Tasks without delegates degrade cleanly — the response
+   * just contains the parent's events.
+   *
+   * Response shape note: backend returns `lastSeq` in legacy mode and
+   * `nextCursor` (+ `taskIds`, `truncated`) in descendants mode. Existing
+   * consumers only read `events`, so both shapes work.
+   *
    * Returns 404 when the backend has no DB / recorder wired — callers
    * should treat that case as "no history available" and fall back to
    * just rendering the trace summary chip row.
    */
-  getTaskEventHistory: (taskId: string, since?: number) => {
-    const qs = since !== undefined ? `?since=${since}` : '';
+  getTaskEventHistory: (
+    taskId: string,
+    opts?: { since?: number | string; includeDescendants?: boolean; maxDepth?: number },
+  ) => {
+    const params = new URLSearchParams();
+    const includeDescendants = opts?.includeDescendants ?? true;
+    if (includeDescendants) params.set('includeDescendants', 'true');
+    if (opts?.maxDepth !== undefined) params.set('maxDepth', String(opts.maxDepth));
+    if (opts?.since !== undefined) params.set('since', String(opts.since));
+    const qs = params.toString();
     return fetchJSON<{
       taskId: string;
+      /** Present in descendants mode — the resolved tree root (== taskId). */
+      rootTaskId?: string;
+      /** Present in descendants mode — the discovered descendant taskIds. */
+      taskIds?: string[];
       events: Array<{
         id: string;
         taskId: string;
@@ -1081,8 +1341,13 @@ export const api = {
         payload: Record<string, unknown>;
         ts: number;
       }>;
-      lastSeq: number;
-    }>(`/tasks/${encodeURIComponent(taskId)}/event-history${qs}`);
+      /** Legacy mode — per-task seq cursor. */
+      lastSeq?: number;
+      /** Descendants mode — opaque `<ts>:<id>` cursor for cross-task pagination. */
+      nextCursor?: string;
+      /** Descendants mode — true when the resolver hit the 64-task cap. */
+      truncated?: boolean;
+    }>(`/tasks/${encodeURIComponent(taskId)}/event-history${qs ? `?${qs}` : ''}`);
   },
 
   // Approval (A6)
@@ -1178,6 +1443,27 @@ export const api = {
     }),
 
   /**
+   * Ask the backend LLM for `count` candidate answers to a workflow
+   * `human-input` question — surfaced as chips on the inline answer card
+   * so the user has a starting point when stuck. The endpoint returns
+   * 502 when the LLM is unavailable / unparseable; callers should treat
+   * that as "no suggestions" and keep the type-your-own-answer flow.
+   */
+  suggestWorkflowHumanInput: (
+    sessionId: string,
+    args: { taskId: string; stepId: string; question: string; count?: number },
+  ) =>
+    fetchJSON<{
+      taskId: string;
+      stepId: string;
+      sessionId: string;
+      suggestions: string[];
+    }>(`/sessions/${sessionId}/workflow/human-input/suggest`, {
+      method: 'POST',
+      body: JSON.stringify(args),
+    }),
+
+  /**
    * Workflow paused on a partial-failure decision gate — fires after a
    * `delegate-sub-agent` step failed AND its cascade caused a dependent
    * step to skip. The user picks `'continue'` (ship the deterministic
@@ -1199,6 +1485,69 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(args),
     }),
+
+  // ── External Coding CLI (Claude Code / GitHub Copilot) ─────────────
+  // The bus events flow through `useSSESync` + `reduceTurn` already; these
+  // endpoints are for the imperative actions: pick provider, start session,
+  // send follow-ups, approve/reject prompts, cancel, replay history.
+  codingCli: {
+    listProviders: (refresh?: boolean) =>
+      fetchJSON<{ providers: CodingCliDetectionResponse[] }>(
+        `/coding-cli/providers${refresh ? '?refresh=1' : ''}`,
+      ),
+    listSessions: () =>
+      fetchJSON<{
+        live: CodingCliLiveSession[];
+        persisted: CodingCliPersistedSession[];
+      }>('/coding-cli/sessions'),
+    getSession: (sessionId: string) =>
+      fetchJSON<CodingCliLiveSession | { session: CodingCliPersistedSession }>(
+        `/coding-cli/sessions/${encodeURIComponent(sessionId)}`,
+      ),
+    createSession: (params: {
+      task: CodingCliTaskRequest;
+      providerId?: 'claude-code' | 'github-copilot';
+      headless?: boolean;
+    }) =>
+      fetchJSON<CodingCliCreateSessionResponse>('/coding-cli/sessions', {
+        method: 'POST',
+        body: JSON.stringify(params),
+      }),
+    runHeadless: (params: { task: CodingCliTaskRequest; providerId?: 'claude-code' | 'github-copilot' }) =>
+      fetchJSON<CodingCliCreateSessionResponse>('/coding-cli/run', {
+        method: 'POST',
+        body: JSON.stringify(params),
+      }),
+    sendMessage: (sessionId: string, text: string) =>
+      fetchJSON<{ delivered: boolean }>(
+        `/coding-cli/sessions/${encodeURIComponent(sessionId)}/message`,
+        { method: 'POST', body: JSON.stringify({ text }) },
+      ),
+    approve: (sessionId: string, taskId: string, requestId: string) =>
+      fetchJSON<{ resolved: boolean; decision: 'approved' }>(
+        `/coding-cli/sessions/${encodeURIComponent(sessionId)}/approve`,
+        { method: 'POST', body: JSON.stringify({ taskId, requestId }) },
+      ),
+    reject: (sessionId: string, taskId: string, requestId: string) =>
+      fetchJSON<{ resolved: boolean; decision: 'rejected' }>(
+        `/coding-cli/sessions/${encodeURIComponent(sessionId)}/reject`,
+        { method: 'POST', body: JSON.stringify({ taskId, requestId }) },
+      ),
+    cancel: (sessionId: string, reason?: string) =>
+      fetchJSON<{ cancelled: boolean }>(
+        `/coding-cli/sessions/${encodeURIComponent(sessionId)}/cancel`,
+        { method: 'POST', body: JSON.stringify({ reason }) },
+      ),
+    getEvents: (sessionId: string, opts: { since?: number; limit?: number } = {}) => {
+      const qs = new URLSearchParams();
+      if (opts.since !== undefined) qs.set('since', String(opts.since));
+      if (opts.limit !== undefined) qs.set('limit', String(opts.limit));
+      const tail = qs.toString();
+      return fetchJSON<{ events: CodingCliPersistedEvent[] }>(
+        `/coding-cli/sessions/${encodeURIComponent(sessionId)}/events${tail ? `?${tail}` : ''}`,
+      );
+    },
+  },
 
   /**
    * Send a message using SSE streaming. Returns an async generator that

@@ -12,6 +12,11 @@
 import { create } from 'zustand';
 import type { SSEEvent } from '@/lib/api-client';
 import { PHASE_ORDER, type PhaseName } from '@/lib/phases';
+import {
+  isCodingCliEvent,
+  reduceCodingCliSessions,
+  type CodingCliSessionState,
+} from './coding-cli-state';
 
 export type { PhaseName };
 
@@ -288,6 +293,14 @@ export interface StreamingTurn {
    * While set, the chat bubble renders the inline decision card.
    */
   pendingPartialDecision?: PendingPartialDecision;
+  /**
+   * External Coding CLI substate, keyed by `codingCliSessionId`. One
+   * agentic-workflow turn may spawn multiple coding-cli sessions
+   * (e.g. delegate-sub-agent step that uses Claude Code in headless
+   * mode for one file and a separate Copilot session for another).
+   * The reducer in `coding-cli-state.ts` is the single mutator.
+   */
+  codingCliSessions: Record<string, CodingCliSessionState>;
   /** Internal stream bookkeeping used to de-dupe legacy/rich text events. */
   stream?: StreamState;
   /**
@@ -406,6 +419,7 @@ export function emptyTurn(options: { taskId?: string; startedAt?: number; recove
     subTaskIdIndex: {},
     stepOutputs: {},
     processLog: [],
+    codingCliSessions: {},
   };
 }
 
@@ -696,6 +710,14 @@ export const useStreamingTurnStore = create<StreamingTurnState>((set) => ({
 /** Pure reducer — exported for unit tests. */
 export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn {
   const p = event.payload ?? {};
+  // External Coding CLI events: delegate to a self-contained substate
+  // reducer. Keeps the main switch readable as the coding-cli surface
+  // grows. `codingCliSessions` is the only field touched.
+  if (isCodingCliEvent(event.event)) {
+    const next = reduceCodingCliSessions(turn.codingCliSessions, event);
+    if (next === turn.codingCliSessions) return turn;
+    return { ...turn, codingCliSessions: next };
+  }
   switch (event.event) {
     case 'task:start': {
       const input = (p.input as Record<string, unknown> | undefined) ?? {};

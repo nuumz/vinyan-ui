@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react';
-import { RefreshCw, Search } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { RefreshCw, Search, X } from 'lucide-react';
 import { useTraces } from '@/hooks/use-traces';
 import { PageHeader } from '@/components/ui/page-header';
 import { Badge, StatusBadge } from '@/components/ui/badge';
@@ -13,12 +14,40 @@ import type { TraceSummary } from '@/lib/api-client';
 type OutcomeFilter = 'all' | 'success' | 'failure' | 'escalated';
 
 export default function Trace() {
-  const [search, setSearch] = useState('');
+  // URL params drive deep-links from the agent drawer:
+  //   /trace?taskSignature=<sig>  → filter to one fingerprint (server-side)
+  //   /trace?search=<text>        → pre-fill the local text filter (taskId etc.)
+  // The chip near the table makes the active server-side filter visible
+  // and gives a 1-click `clear` that also rewrites the URL so the
+  // back-button preserves the unfiltered view.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const taskSignature = searchParams.get('taskSignature') ?? undefined;
+  const initialSearch = searchParams.get('search') ?? '';
+
+  const [search, setSearch] = useState(initialSearch);
   const [outcome, setOutcome] = useState<OutcomeFilter>('all');
+
+  // Keep local search synchronized when the URL changes (operator hits the
+  // back/forward button to revisit a deep-linked page).
+  useEffect(() => {
+    setSearch(searchParams.get('search') ?? '');
+  }, [searchParams]);
+
   const query = useTraces({
     limit: 100,
     outcome: outcome === 'all' ? undefined : outcome,
+    ...(taskSignature ? { taskSignature } : {}),
   });
+
+  /**
+   * Clear the server-side fingerprint filter — drops `taskSignature` from the
+   * URL but preserves any other params (e.g. `search`).
+   */
+  const clearTaskSignature = () => {
+    const next = new URLSearchParams(searchParams);
+    next.delete('taskSignature');
+    setSearchParams(next, { replace: true });
+  };
 
   const [selected, setSelected] = useState<TraceSummary | null>(null);
   const traces = query.data?.traces ?? [];
@@ -73,6 +102,25 @@ export default function Trace() {
             </button>
           ))}
         </div>
+
+        {taskSignature && (
+          <div
+            className="flex items-center gap-1.5 px-2.5 py-1 text-xs rounded bg-accent/10 text-accent border border-accent/30"
+            title="Server-side fingerprint filter — clear to see every fingerprint."
+          >
+            <span className="text-text-dim">fingerprint:</span>
+            <code className="font-mono">{taskSignature}</code>
+            <button
+              type="button"
+              onClick={clearTaskSignature}
+              className="ml-1 hover:text-text"
+              title="Clear fingerprint filter"
+            >
+              <X size={12} />
+            </button>
+          </div>
+        )}
+
         <div className="relative ml-auto">
           <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-dim" />
           <input

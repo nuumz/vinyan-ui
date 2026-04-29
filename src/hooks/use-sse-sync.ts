@@ -118,6 +118,23 @@ export function useSSESync({ enabled }: UseSSESyncOptions) {
           queryClient.invalidateQueries({ queryKey: qk.memory });
         }
       }
+      // External Coding CLI: every event flows through `reduceTurn` via
+      // `ingestGlobalTurn` above so the chat bubble renders the substate
+      // automatically. Surfaces that need their OWN cache touched land here.
+      if (name.startsWith('coding-cli:')) {
+        if (name === 'coding-cli:approval_required') {
+          const p = event.payload as { providerId?: string; summary?: string; scope?: string };
+          toast.info(
+            `Coding CLI approval needed (${p.providerId ?? 'cli'}/${p.scope ?? 'unknown'}): ${p.summary ?? 'permission requested'}`,
+          );
+        } else if (name === 'coding-cli:failed') {
+          const p = event.payload as { providerId?: string; reason?: string };
+          toast.error(`Coding CLI failed (${p.providerId ?? 'cli'}): ${p.reason ?? 'unknown'}`);
+        } else if (name === 'coding-cli:stalled') {
+          const p = event.payload as { providerId?: string; idleMs?: number };
+          toast.warning(`Coding CLI stalled (${p.providerId ?? 'cli'}, idle ${p.idleMs ?? 0}ms)`);
+        }
+      }
     },
     [queryClient, addEvent, ingestGlobalTurn, clearTurn],
   );

@@ -96,6 +96,46 @@ export function useProvideWorkflowHumanInput() {
   });
 }
 
+interface SuggestHumanInputArgs {
+  sessionId: string;
+  taskId: string;
+  stepId: string;
+  question: string;
+  count?: number;
+}
+
+interface SuggestHumanInputResult {
+  taskId: string;
+  stepId: string;
+  sessionId: string;
+  suggestions: string[];
+}
+
+/**
+ * Ask the backend LLM for candidate answers to a `human-input` step. Used
+ * by the inline answer card's "Suggest answers" button — when the user
+ * can't think of how to answer the agent's question (or wants to see what
+ * the model would propose) this returns a small list of options they can
+ * click to fill the textarea.
+ *
+ * The mutation surfaces 502s as recoverable errors via the toast — the
+ * user can still type a free-form answer if suggestions aren't available.
+ */
+export function useSuggestWorkflowHumanInput() {
+  return useMutation<SuggestHumanInputResult, Error, SuggestHumanInputArgs>({
+    mutationFn: (args) =>
+      api.suggestWorkflowHumanInput(args.sessionId, {
+        taskId: args.taskId,
+        stepId: args.stepId,
+        question: args.question,
+        count: args.count,
+      }),
+    onError: (err) => {
+      toast.apiError(err, { fallback: 'Could not generate suggestions' });
+    },
+  });
+}
+
 interface PartialFailureDecisionArgs {
   sessionId: string;
   taskId: string;
