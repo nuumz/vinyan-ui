@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useState, useRef } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useMemo, useState, useRef } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useSessionMessages, useSendMessage } from '@/hooks/use-chat';
 import { useStreamingTurn, useStreamingTurnStore } from '@/hooks/use-streaming-turn';
@@ -24,6 +24,7 @@ import {
   Send,
   Trash2,
 } from 'lucide-react';
+import { HistoricalProcessCard } from '@/components/chat/historical-process-card';
 import { MessageBubble } from '@/components/chat/message-bubble';
 import { StreamingBubble } from '@/components/chat/streaming-bubble';
 import { ActionMenu, type ActionMenuItem } from '@/components/ui/action-menu';
@@ -289,9 +290,32 @@ export default function SessionChat() {
           </div>
         )}
 
-        {visibleMessages.map((msg) => (
-          <MessageBubble key={`${msg.role}-${msg.timestamp}-${msg.taskId}`} message={msg} />
-        ))}
+        {visibleMessages.map((msg) => {
+          // For agentic-workflow assistant messages, render the persisted
+          // process card as its own bubble ABOVE the response bubble. The
+          // user explicitly asked for the process box to remain visible
+          // after completion (showing plan + sub-agent activity) AND for
+          // the response to appear as a separate new card. Without this,
+          // the process detail disappears when the streaming bubble
+          // resolves into a single chat bubble that hides the process
+          // behind a click-to-expand button.
+          const showProcessSibling =
+            msg.role === 'assistant' &&
+            !!msg.taskId &&
+            msg.traceSummary?.approach === 'agentic-workflow';
+          return (
+            <Fragment key={`${msg.role}-${msg.timestamp}-${msg.taskId}`}>
+              {showProcessSibling && (
+                <div className="flex justify-start">
+                  <div className="max-w-[88%] w-full">
+                    <HistoricalProcessCard taskId={msg.taskId} />
+                  </div>
+                </div>
+              )}
+              <MessageBubble message={msg} />
+            </Fragment>
+          );
+        })}
 
         {showStreaming && turn && sessionId && (
           <StreamingBubble

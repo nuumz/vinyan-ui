@@ -117,7 +117,12 @@ export function MessageBubble({ message }: { message: ConversationEntry }) {
   const clarification = !isUser ? parseInputRequiredBlock(message.content) : null;
   const tools = normalizeToolsUsed(message.toolsUsed);
   const trace = !isUser ? message.traceSummary : undefined;
-  const hasProcess = !isUser && Boolean(message.taskId);
+  // Suppress the in-bubble "Process" toggle for agentic-workflow messages
+  // because session-chat.tsx renders the persisted process card as its
+  // own sibling bubble above this one. Toggling the same surface twice
+  // would just be redundant.
+  const hasProcess =
+    !isUser && Boolean(message.taskId) && trace?.approach !== 'agentic-workflow';
 
   return (
     <div className={cn('flex', isUser ? 'justify-end' : 'justify-start')}>

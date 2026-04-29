@@ -803,7 +803,19 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
             }
           : s,
       );
-      return { ...turn, planSteps: updated };
+      // Also feed the per-agent preview into `stepOutputs[stepId]` so the
+      // existing PlanSurface step expansion renders it natively. Without
+      // this the `delegate-sub-agent` rows expand to nothing — the
+      // sub-task's LLM stream goes to its own taskId, not to the parent's
+      // stepOutputs map. Carrying the preview on plan_step keeps the chip
+      // at-a-glance, while stepOutputs unlocks the click-to-expand UX
+      // already wired into the plan checklist (avoids a redundant
+      // standalone "sub-agents" card showing the same data twice — see
+      // session 43c36d16 user feedback on duplication).
+      const nextStepOutputs = outputPreview
+        ? { ...turn.stepOutputs, [stepId]: outputPreview }
+        : turn.stepOutputs;
+      return { ...turn, planSteps: updated, stepOutputs: nextStepOutputs };
     }
     case 'agent:clarification_requested': {
       const questions =

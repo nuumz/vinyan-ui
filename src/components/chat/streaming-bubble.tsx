@@ -36,11 +36,11 @@ export function StreamingBubble({ turn, sessionId, nowMs, onRetry }: StreamingBu
       <div className="max-w-[88%] w-full bg-surface border border-border rounded-lg px-4 py-3 text-sm flex flex-col gap-3">
         <TurnHeader turn={turn} nowMs={nowMs} />
         <InterruptBanner turn={turn} sessionId={sessionId} onRetry={onRetry} />
-        <PlanSurface turn={turn} />
         <AgentTimelineCard
           steps={turn.planSteps}
           isLive={turn.status === 'running'}
         />
+        <PlanSurface turn={turn} />
         <ProcessTimeline turn={turn} />
         <FinalAnswer turn={turn} />
         <DiagnosticsDrawer turn={turn} />

@@ -1,8 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import {
   Bot,
-  ChevronDown,
-  ChevronRight,
   CircleAlert,
   CircleCheck,
   CircleDashed,
@@ -10,34 +8,33 @@ import {
   Loader2,
   SkipForward,
   Users,
+  Zap,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { PlanStep } from '@/hooks/use-streaming-turn';
-import { Markdown } from './markdown';
 
 /**
- * Multi-agent audit card. Renders ONE row per `delegate-sub-agent` plan
- * step with the resolved agent persona, status, duration, and the agent's
- * output preview (expandable). Solves the visibility gap from the
- * 2026-04-29 multi-agent tests where the chat surface only showed the
- * synthesized final answer with no way to see what each sub-agent
- * actually said.
+ * Live multi-agent activity card. Surfaces the per-sub-agent status
+ * during a running `delegate-sub-agent` workflow so the user can see
+ * which persona is working RIGHT NOW, what they are doing, and how
+ * each task is progressing — without expanding the plan checklist.
  *
- * Designed to live INSIDE the assistant message bubble (or replay card)
- * — not as a sidebar — so audit drill-down stays in the conversation
- * column the user is already reading. Self-contained: no extra fetches,
- * just projects from the parent turn's planSteps which the reducer
- * already populated from `agent:plan_update` + `workflow:delegate_*`.
+ * Designed as a complementary surface to PlanSurface:
+ *   - PlanSurface = full plan checklist (all step types incl. setup +
+ *     synthesis), expand-to-read each step's output.
+ *   - AgentTimelineCard = focused parallel-agent activity feed, only
+ *     delegate steps, status-first emphasis (pulsing while running),
+ *     no output text (that lives in the plan expansion).
+ *
+ * Positioned ABOVE the plan checklist when the workflow has multiple
+ * agents — it answers the at-a-glance question "what are the agents
+ * doing right now" before the user has to scan the plan rows.
  */
 export interface AgentTimelineCardProps {
-  /** Parent goal text shown in the header for audit context. */
-  parentGoal?: string;
-  /** Plan steps from the parent turn. The card filters to delegates internally. */
+  /** Plan steps from the parent turn. Filtered internally to delegate-sub-agent rows. */
   steps: PlanStep[];
-  /** True while the parent turn is still running — drives the live pulse. */
+  /** True while the parent turn is still running — drives live pulses. */
   isLive?: boolean;
-  /** Open one delegate by default (e.g. the first failed/timeout). */
-  defaultExpandedStepId?: string;
 }
 
 function formatDuration(ms: number): string {
@@ -53,6 +50,7 @@ function statusMeta(step: PlanStep): {
   Icon: typeof CircleCheck;
   cls: string;
   spin?: boolean;
+  pulse?: boolean;
 } {
   const isTimeout =
     step.status === 'failed' && (step.outputPreview ?? '').toLowerCase().includes('timed out');
@@ -76,10 +74,11 @@ function statusMeta(step: PlanStep): {
       };
     case 'running':
       return {
-        label: 'running',
+        label: 'working…',
         Icon: Loader2,
-        cls: 'text-blue border-blue/30 bg-blue/5',
+        cls: 'text-blue border-blue/40 bg-blue/10',
         spin: true,
+        pulse: true,
       };
     default:
       return {
@@ -90,139 +89,102 @@ function statusMeta(step: PlanStep): {
   }
 }
 
-export function AgentTimelineCard({
-  parentGoal,
-  steps,
-  isLive = false,
-  defaultExpandedStepId,
-}: AgentTimelineCardProps) {
+export function AgentTimelineCard({ steps, isLive = false }: AgentTimelineCardProps) {
   // Filter to delegate-sub-agent rows. Anything else (knowledge-query,
-  // llm-reasoning, direct-tool, synthesis) is part of the regular plan
-  // checklist rendered by PlanSurface — not duplicated here.
+  // llm-reasoning, direct-tool, synthesis) belongs in the plan checklist
+  // — duplicating them here would be visual noise.
   const delegateRows = useMemo(
     () => steps.filter((s) => s.strategy === 'delegate-sub-agent'),
     [steps],
   );
 
-  const [openId, setOpenId] = useState<string | null>(defaultExpandedStepId ?? null);
-
   if (delegateRows.length === 0) return null;
 
-  const doneCount = delegateRows.filter(
-    (s) => s.status === 'done' || s.status === 'failed' || s.status === 'skipped',
+  const doneCount = delegateRows.filter((s) => s.status === 'done').length;
+  const failedCount = delegateRows.filter(
+    (s) => s.status === 'failed' || s.status === 'skipped',
   ).length;
-  const totalDuration = delegateRows
-    .map((s) =>
-      s.startedAt && s.finishedAt ? s.finishedAt - s.startedAt : 0,
-    )
-    .reduce((max, d) => Math.max(max, d), 0);
+  const runningCount = delegateRows.filter((s) => s.status === 'running').length;
+  const allDone = doneCount + failedCount === delegateRows.length;
 
   return (
-    <div className="mt-3 rounded-md border border-border/60 bg-bg/30 px-3 py-2.5 space-y-2">
+    <div
+      className={cn(
+        'rounded-md border px-3 py-2 space-y-1.5',
+        isLive && runningCount > 0
+          ? 'border-blue/30 bg-blue/5'
+          : 'border-border/60 bg-bg/30',
+      )}
+    >
       <div className="flex items-center justify-between text-[11px] uppercase tracking-wide text-text-dim font-medium">
         <span className="flex items-center gap-1.5">
-          <Users
-            size={11}
-            className={cn('text-blue', isLive && 'animate-pulse')}
-          />
-          Sub-agents
-          <span className="font-mono normal-case tracking-normal">
-            {doneCount}/{delegateRows.length}
-          </span>
+          {isLive && runningCount > 0 ? (
+            <Zap size={11} className="text-blue animate-pulse" />
+          ) : (
+            <Users size={11} className="text-text-dim/80" />
+          )}
+          {isLive && runningCount > 0
+            ? `${runningCount} agent${runningCount === 1 ? '' : 's'} working`
+            : allDone
+              ? 'Sub-agents'
+              : `${runningCount + failedCount + doneCount}/${delegateRows.length} sub-agents`}
         </span>
-        {totalDuration > 0 && (
-          <span className="font-mono normal-case text-text-dim/70 inline-flex items-center gap-1">
-            <Clock size={9} /> {formatDuration(totalDuration)} max
-          </span>
-        )}
+        <span className="font-mono normal-case text-text-dim/70 inline-flex items-center gap-2">
+          {doneCount > 0 && (
+            <span className="text-green/80">{doneCount} done</span>
+          )}
+          {failedCount > 0 && <span className="text-red/80">{failedCount} failed</span>}
+        </span>
       </div>
-
-      {parentGoal && (
-        <div
-          className="text-xs text-text-dim line-clamp-1"
-          title={parentGoal}
-        >
-          {parentGoal}
-        </div>
-      )}
 
       <ul className="space-y-1">
         {delegateRows.map((row) => {
           const meta = statusMeta(row);
           const Icon = meta.Icon;
-          const open = openId === row.id;
           const duration =
             row.startedAt && row.finishedAt
               ? formatDuration(row.finishedAt - row.startedAt)
               : row.startedAt && isLive
                 ? '…'
                 : null;
-          const hasOutput = !!row.outputPreview && row.outputPreview.trim().length > 0;
           return (
-            <li key={row.id} className="text-xs">
-              <button
-                type="button"
-                onClick={() => setOpenId(open ? null : row.id)}
-                className={cn(
-                  'w-full flex items-start gap-2 rounded px-2 py-1.5 border transition-colors',
-                  meta.cls,
-                  'hover:bg-bg/50',
-                )}
-                aria-expanded={open}
-              >
-                {open ? (
-                  <ChevronDown size={11} className="mt-0.5 shrink-0 text-text-dim" />
-                ) : (
-                  <ChevronRight size={11} className="mt-0.5 shrink-0 text-text-dim" />
-                )}
-                <Bot size={12} className={cn('mt-0.5 shrink-0', meta.spin && 'animate-spin')} />
-                <span className="font-mono shrink-0 font-medium">
-                  {row.agentId ?? 'agent?'}
+            <li
+              key={row.id}
+              className={cn(
+                'flex items-center gap-2 rounded px-2 py-1 border text-xs',
+                meta.cls,
+                meta.pulse && 'animate-[pulse_2s_ease-in-out_infinite]',
+              )}
+              title={row.label}
+            >
+              <Bot size={12} className={cn('shrink-0', meta.spin && 'animate-spin')} />
+              <span className="font-mono shrink-0 font-medium min-w-[5rem]">
+                {row.agentId ?? 'agent?'}
+              </span>
+              <span className="flex-1 text-text/85 line-clamp-1 text-[11px]">
+                {row.label}
+              </span>
+              <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-medium uppercase">
+                <Icon size={9} className={cn(meta.spin && 'animate-spin')} />
+                {meta.label}
+              </span>
+              {duration && (
+                <span className="shrink-0 text-[10px] text-text-dim tabular-nums font-mono inline-flex items-center gap-0.5">
+                  <Clock size={9} />
+                  {duration}
                 </span>
-                <span className="flex-1 text-left text-text/85 line-clamp-1">{row.label}</span>
-                <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-medium uppercase">
-                  <Icon size={9} className={cn(meta.spin && 'animate-spin')} />
-                  {meta.label}
-                </span>
-                {duration && (
-                  <span className="shrink-0 text-[10px] text-text-dim tabular-nums font-mono">
-                    {duration}
-                  </span>
-                )}
-              </button>
-              {open && (
-                <div className="ml-6 mt-1 border-l border-border/60 pl-3 py-1 space-y-1.5">
-                  {row.subTaskId && (
-                    <div className="text-[10px] text-text-dim font-mono">
-                      sub-task: {row.subTaskId}
-                    </div>
-                  )}
-                  {hasOutput ? (
-                    <div className="text-text/90 max-h-64 overflow-auto">
-                      <Markdown content={row.outputPreview!} />
-                      {row.outputPreview!.length >= 300 && (
-                        <div className="mt-1 text-[10px] text-text-dim italic">
-                          (preview — full output is in the synthesized final answer above)
-                        </div>
-                      )}
-                    </div>
-                  ) : row.status === 'failed' ? (
-                    <div className="text-xs text-red bg-red/5 border border-red/20 rounded p-2">
-                      [no output captured — agent {meta.label}]
-                    </div>
-                  ) : row.status === 'running' || row.status === 'pending' ? (
-                    <div className="text-xs text-text-dim italic">
-                      {row.status === 'running' ? 'agent is working…' : 'waiting to start'}
-                    </div>
-                  ) : (
-                    <div className="text-xs text-text-dim italic">[no output captured]</div>
-                  )}
-                </div>
               )}
             </li>
           );
         })}
       </ul>
+
+      {isLive && runningCount > 0 && (
+        <div className="text-[10px] text-text-dim italic pt-0.5">
+          Each agent runs independently in parallel — expand the plan below to read each
+          response when ready.
+        </div>
+      )}
     </div>
   );
 }

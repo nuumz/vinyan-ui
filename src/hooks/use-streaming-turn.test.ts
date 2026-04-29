@@ -431,3 +431,169 @@ describe('useStreamingTurnStore — bubble lifecycle', () => {
     expect(after?.finalContent).toBe(before?.finalContent);
   });
 });
+
+describe('reduceTurn — multi-agent (AgentTimelineCard data)', () => {
+  test('agent:plan_update preserves agentId + strategy from backend snapshot', () => {
+    const t = reduceTurn(
+      emptyTurn(),
+      ev('agent:plan_update', {
+        steps: [
+          {
+            id: 'step1',
+            label: 'Generate question',
+            status: 'pending',
+            strategy: 'llm-reasoning',
+          },
+          {
+            id: 'step2',
+            label: 'Researcher answers',
+            status: 'pending',
+            strategy: 'delegate-sub-agent',
+            agentId: 'researcher',
+          },
+          {
+            id: 'step3',
+            label: 'Author answers',
+            status: 'pending',
+            strategy: 'delegate-sub-agent',
+            agentId: 'author',
+          },
+        ],
+      }),
+    );
+    expect(t.planSteps).toHaveLength(3);
+    expect(t.planSteps[1]!.agentId).toBe('researcher');
+    expect(t.planSteps[1]!.strategy).toBe('delegate-sub-agent');
+    expect(t.planSteps[2]!.agentId).toBe('author');
+    // Setup step has strategy but no agentId — distinguishable from delegates.
+    expect(t.planSteps[0]!.strategy).toBe('llm-reasoning');
+    expect(t.planSteps[0]!.agentId).toBeUndefined();
+  });
+
+  test('workflow:delegate_dispatched pins agentId + flips matching step to running', () => {
+    const seeded = fold(emptyTurn(), [
+      ev('agent:plan_update', {
+        steps: [
+          {
+            id: 'step2',
+            label: 'Researcher answers',
+            status: 'pending',
+            strategy: 'delegate-sub-agent',
+            agentId: 'researcher',
+          },
+        ],
+      }),
+      ev('workflow:delegate_dispatched', {
+        taskId: 'parent-1',
+        stepId: 'step2',
+        agentId: 'researcher',
+        subTaskId: 'parent-1-delegate-step2',
+        stepDescription: 'Researcher answers',
+      }),
+    ]);
+    const step = seeded.planSteps.find((s) => s.id === 'step2')!;
+    expect(step.agentId).toBe('researcher');
+    expect(step.subTaskId).toBe('parent-1-delegate-step2');
+    expect(step.status).toBe('running');
+    expect(step.startedAt).toBeDefined();
+  });
+
+  test('workflow:delegate_completed captures outputPreview + maps completed → done', () => {
+    const seeded = fold(emptyTurn(), [
+      ev('agent:plan_update', {
+        steps: [
+          {
+            id: 'step2',
+            label: 'Researcher',
+            status: 'running',
+            strategy: 'delegate-sub-agent',
+            agentId: 'researcher',
+          },
+        ],
+      }),
+      ev('workflow:delegate_completed', {
+        taskId: 'parent-1',
+        stepId: 'step2',
+        subTaskId: 'parent-1-delegate-step2',
+        agentId: 'researcher',
+        status: 'completed',
+        outputPreview: 'Empirical analysis says X',
+        tokensUsed: 100,
+      }),
+    ]);
+    const step = seeded.planSteps.find((s) => s.id === 'step2')!;
+    expect(step.outputPreview).toBe('Empirical analysis says X');
+    expect(step.status).toBe('done');
+    expect(step.finishedAt).toBeDefined();
+    // Plumbed into stepOutputs so PlanSurface's existing step expansion
+    // renders the per-agent answer without a redundant standalone card.
+    expect(seeded.stepOutputs.step2).toBe('Empirical analysis says X');
+  });
+
+  test('workflow:delegate_completed with status=failed surfaces failure (no fabrication)', () => {
+    const seeded = fold(emptyTurn(), [
+      ev('agent:plan_update', {
+        steps: [
+          {
+            id: 'step3',
+            label: 'Author',
+            status: 'running',
+            strategy: 'delegate-sub-agent',
+            agentId: 'author',
+          },
+        ],
+      }),
+      ev('workflow:delegate_completed', {
+        taskId: 'parent-1',
+        stepId: 'step3',
+        subTaskId: 'parent-1-delegate-step3',
+        agentId: 'author',
+        status: 'failed',
+        outputPreview: 'delegate-sub-agent step step3 timed out after 120s (agent=author)',
+        tokensUsed: 0,
+      }),
+    ]);
+    const step = seeded.planSteps.find((s) => s.id === 'step3')!;
+    expect(step.status).toBe('failed');
+    expect(step.outputPreview).toContain('timed out');
+  });
+
+  test('agent:plan_update preserves outputPreview from prior delegate_completed', () => {
+    // Common race: delegate_completed arrives, then a stale plan_update from
+    // the executor's mid-loop snapshot fires. The reducer must NOT clobber
+    // the captured outputPreview when re-snapshotting steps.
+    const seeded = fold(emptyTurn(), [
+      ev('agent:plan_update', {
+        steps: [
+          {
+            id: 'step2',
+            label: 'Researcher',
+            status: 'running',
+            strategy: 'delegate-sub-agent',
+            agentId: 'researcher',
+          },
+        ],
+      }),
+      ev('workflow:delegate_completed', {
+        stepId: 'step2',
+        agentId: 'researcher',
+        status: 'completed',
+        outputPreview: 'real answer',
+      }),
+      ev('agent:plan_update', {
+        steps: [
+          {
+            id: 'step2',
+            label: 'Researcher',
+            status: 'done',
+            strategy: 'delegate-sub-agent',
+            agentId: 'researcher',
+          },
+        ],
+      }),
+    ]);
+    const step = seeded.planSteps.find((s) => s.id === 'step2')!;
+    expect(step.outputPreview).toBe('real answer');
+    expect(step.status).toBe('done');
+  });
+});
