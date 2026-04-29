@@ -107,7 +107,11 @@ export function HistoricalProcessCard({ taskId }: HistoricalProcessCardProps) {
   return (
     <CardShell>
       <div className="space-y-2">
-        <AgentTimelineCard steps={finishedTurn.planSteps} isLive={false} />
+        <AgentTimelineCard
+          steps={finishedTurn.planSteps}
+          stepOutputs={finishedTurn.stepOutputs}
+          isLive={false}
+        />
         <PlanSurface turn={finishedTurn} />
         <ProcessTimeline turn={finishedTurn} />
         <DiagnosticsDrawer turn={finishedTurn} />

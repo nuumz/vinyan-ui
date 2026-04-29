@@ -38,6 +38,7 @@ export function StreamingBubble({ turn, sessionId, nowMs, onRetry }: StreamingBu
         <InterruptBanner turn={turn} sessionId={sessionId} onRetry={onRetry} />
         <AgentTimelineCard
           steps={turn.planSteps}
+          stepOutputs={turn.stepOutputs}
           isLive={turn.status === 'running'}
         />
         <PlanSurface turn={turn} />
