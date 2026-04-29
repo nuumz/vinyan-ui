@@ -1,4 +1,5 @@
 import type { StreamingTurn } from '@/hooks/use-streaming-turn';
+import { AgentTimelineCard } from './agent-timeline-card';
 import { DiagnosticsDrawer } from './diagnostics-drawer';
 import { FinalAnswer } from './final-answer';
 import { InterruptBanner } from './interrupt-banner';
@@ -36,6 +37,10 @@ export function StreamingBubble({ turn, sessionId, nowMs, onRetry }: StreamingBu
         <TurnHeader turn={turn} nowMs={nowMs} />
         <InterruptBanner turn={turn} sessionId={sessionId} onRetry={onRetry} />
         <PlanSurface turn={turn} />
+        <AgentTimelineCard
+          steps={turn.planSteps}
+          isLive={turn.status === 'running'}
+        />
         <ProcessTimeline turn={turn} />
         <FinalAnswer turn={turn} />
         <DiagnosticsDrawer turn={turn} />

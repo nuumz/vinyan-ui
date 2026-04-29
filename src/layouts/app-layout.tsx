@@ -36,6 +36,7 @@ import { useSSESync } from '@/hooks/use-sse-sync';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { AuthButton } from '@/components/auth-button';
 import { SystemStatusBanner } from '@/components/system-status-banner';
+import { DegradationStatusBanner } from '@/components/degradation-status-banner';
 import { bootstrapAuth } from '@/lib/api-client';
 import { useQueryClient } from '@tanstack/react-query';
 
@@ -64,6 +65,7 @@ const navGroups: NavGroup[] = [
       { to: '/sessions', icon: MessageSquare, label: 'Sessions' },
       { to: '/events', icon: Activity, label: 'Events' },
       { to: '/trace', icon: FileText, label: 'Trace' },
+      { to: '/governance', icon: ShieldCheck, label: 'Governance' },
     ],
   },
   {
@@ -231,6 +233,7 @@ export default function AppLayout() {
       {/* Main */}
       <div className="flex-1 flex flex-col overflow-hidden">
         <SystemStatusBanner />
+        <DegradationStatusBanner />
         <header className="h-11 bg-surface border-b border-border flex items-center justify-between px-4 shrink-0">
           <div className="flex items-center gap-4 text-xs">
             <div className="flex items-center gap-2">

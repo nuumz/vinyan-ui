@@ -240,6 +240,27 @@ export interface PlanStep {
   startedAt?: number;
   /** Wall-clock ms when the step transitioned to a terminal status. */
   finishedAt?: number;
+  /**
+   * Workflow step strategy from the planner — drives whether the
+   * agent-timeline card treats this row as a delegate (distinct sub-agent
+   * persona) vs an in-process step (llm-reasoning / direct-tool / etc.).
+   * Optional for backward compatibility with snapshots from older backends.
+   */
+  strategy?: string;
+  /**
+   * Sub-agent persona that owns this step. Set for `delegate-sub-agent`
+   * steps when the planner pinned a specific agentId, or filled in by
+   * `workflow:delegate_dispatched` once the executor resolves the persona.
+   */
+  agentId?: string;
+  /**
+   * Per-step output preview captured from `workflow:delegate_completed`.
+   * The UI agent-timeline card renders this so users can see what each
+   * sub-agent actually said before the parent's synthesizer runs.
+   */
+  outputPreview?: string;
+  /** Sub-task id (`${parent.id}-delegate-${stepId}`) for trace drill-down. */
+  subTaskId?: string;
 }
 
 interface StreamingTurnState {
@@ -697,6 +718,15 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
           (nextStatus === 'done' || nextStatus === 'failed' || nextStatus === 'skipped'
             ? event.ts || Date.now()
             : undefined);
+        // Backend-supplied multi-agent metadata: prefer values from this
+        // snapshot, fall back to whatever the previous snapshot or a
+        // `workflow:delegate_dispatched` event already set. The
+        // `outputPreview` only ever arrives via the delegate_completed
+        // event so we always preserve `prev?.outputPreview` here.
+        const strategy =
+          typeof o.strategy === 'string' ? (o.strategy as string) : prev?.strategy;
+        const agentId =
+          typeof o.agentId === 'string' ? (o.agentId as string) : prev?.agentId;
         steps.push({
           id,
           label,
@@ -704,10 +734,76 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
           toolCallIds: prev?.toolCallIds ?? [],
           startedAt,
           finishedAt,
+          ...(strategy ? { strategy } : {}),
+          ...(agentId ? { agentId } : {}),
+          ...(prev?.outputPreview ? { outputPreview: prev.outputPreview } : {}),
+          ...(prev?.subTaskId ? { subTaskId: prev.subTaskId } : {}),
         });
       }
       if (steps.length === 0) return turn;
       return { ...turn, planSteps: steps };
+    }
+    case 'workflow:delegate_dispatched': {
+      // Multi-agent UI: pin the resolved agent persona to the matching
+      // step BEFORE the sub-task's `task:start` arrives. Plan checklist
+      // and agent-timeline card both read PlanStep.agentId, so this lets
+      // the UI surface "researcher started" the moment the executor
+      // dispatches the delegate, not several seconds later.
+      const stepId = typeof p.stepId === 'string' ? (p.stepId as string) : undefined;
+      if (!stepId) return turn;
+      const agentId = typeof p.agentId === 'string' ? (p.agentId as string) : undefined;
+      const subTaskId = typeof p.subTaskId === 'string' ? (p.subTaskId as string) : undefined;
+      const updated = turn.planSteps.map((s) =>
+        s.id === stepId
+          ? {
+              ...s,
+              ...(agentId ? { agentId } : {}),
+              ...(subTaskId ? { subTaskId } : {}),
+              startedAt: s.startedAt ?? (event.ts || Date.now()),
+              status: s.status === 'pending' ? ('running' as const) : s.status,
+            }
+          : s,
+      );
+      return { ...turn, planSteps: updated };
+    }
+    case 'workflow:delegate_completed': {
+      // Multi-agent UI: capture the per-agent output preview so the
+      // agent-timeline card can show what each sub-agent answered before
+      // the parent's synthesizer aggregates them. Status update is
+      // defensive — `agent:plan_update` will also flip the step but we
+      // do not want a brief window where the preview is visible but the
+      // step still reads as `running`.
+      const stepId = typeof p.stepId === 'string' ? (p.stepId as string) : undefined;
+      if (!stepId) return turn;
+      // Bus payload status uses WorkflowStepResult vocabulary
+      // ('completed' | 'failed' | 'skipped'), not PlanStep vocabulary
+      // ('done' | 'failed' | 'skipped'). Map across the boundary.
+      const rawStatus = typeof p.status === 'string' ? (p.status as string) : undefined;
+      const outputPreview =
+        typeof p.outputPreview === 'string' ? (p.outputPreview as string) : undefined;
+      const mappedStatus: PlanStep['status'] | undefined =
+        rawStatus === 'completed'
+          ? 'done'
+          : rawStatus === 'failed'
+            ? 'failed'
+            : rawStatus === 'skipped'
+              ? 'skipped'
+              : undefined;
+      const updated = turn.planSteps.map((s) =>
+        s.id === stepId
+          ? {
+              ...s,
+              ...(outputPreview ? { outputPreview } : {}),
+              ...(mappedStatus
+                ? {
+                    status: mappedStatus,
+                    finishedAt: s.finishedAt ?? (event.ts || Date.now()),
+                  }
+                : {}),
+            }
+          : s,
+      );
+      return { ...turn, planSteps: updated };
     }
     case 'agent:clarification_requested': {
       const questions =

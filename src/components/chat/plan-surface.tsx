@@ -110,6 +110,18 @@ function StepRow({ step, index, tools, output, defaultOpen, isStreaming }: StepR
         >
           {step.label}
         </span>
+        {step.agentId && (
+          // Per-agent identity chip — surfaced from the planner's
+          // delegate-sub-agent assignment. Without this the user cannot
+          // tell which persona is answering each step in a multi-agent
+          // workflow ("Researcher / Author / Mentor" was invisible).
+          <span
+            className="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-accent/10 text-accent border border-accent/25 text-[10px] font-medium"
+            title={`Sub-agent: ${step.agentId}`}
+          >
+            {step.agentId}
+          </span>
+        )}
         {duration && (
           <span className="shrink-0 text-[10px] text-text-dim tabular-nums">{duration}</span>
         )}

@@ -656,6 +656,114 @@ export interface SessionDetail {
   pendingClarifications: string[];
 }
 
+// ── Governance (A8) ────────────────────────────────────
+
+export type GovernanceAvailability = 'available' | 'unavailable';
+
+export interface GovernanceTraceSummary {
+  traceId: string;
+  taskId: string;
+  outcome: string;
+  routingLevel: number;
+  timestamp: number;
+  availability: GovernanceAvailability;
+  decisionId?: string;
+  policyVersion?: string;
+  governanceActor?: string;
+  wasGeneratedBy?: string;
+  decidedAt?: number;
+  evidenceObservedAt?: number;
+  reason?: string;
+  escalationPath?: number[];
+  evidenceCount: number;
+}
+
+export interface GovernanceSearchResponse {
+  rows: GovernanceTraceSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface GovernanceEvidenceReference {
+  source: string;
+  kind: string;
+  fileHash?: string;
+  observedAt?: number;
+  detail?: string;
+}
+
+export interface GoalGroundingCheck {
+  phase: string;
+  action: string;
+  reason: string;
+  goalDrift?: boolean;
+  freshnessDowngraded?: boolean;
+  staleFactCount?: number;
+  policyVersion?: string;
+}
+
+export interface DecisionReplaySummary {
+  decisionId: string;
+  availability: GovernanceAvailability;
+  traceId: string;
+  taskId: string;
+  outcome: string;
+  routingLevel: number;
+  timestamp: number;
+  policyVersion?: string;
+  attributedTo?: string;
+  wasGeneratedBy?: string;
+  decidedAt?: number;
+  evidenceObservedAt?: number;
+  reason?: string;
+  escalationPath?: number[];
+  evidence: GovernanceEvidenceReference[];
+  goalGrounding?: GoalGroundingCheck[];
+  pipelineConfidence?: { composite: number };
+  confidenceDecision?: unknown;
+}
+
+export interface GovernanceSearchFilters {
+  decisionId?: string;
+  policyVersion?: string;
+  actor?: string;
+  from?: number;
+  to?: number;
+  limit?: number;
+  offset?: number;
+}
+
+// ── Degradation Status (A9) ────────────────────────────
+
+export type DegradationHealthStatus = 'healthy' | 'degraded' | 'partial-outage' | 'unavailable';
+
+export interface DegradationStatusEntry {
+  component: string;
+  failureType: string;
+  action: string;
+  capabilityImpact: string;
+  severity: string;
+  policyVersion: string;
+  reason: string;
+  sourceEvent: string;
+  occurredAt: number;
+  lastTaskId?: string;
+}
+
+export interface DegradationStatusSnapshot {
+  total: number;
+  entries: DegradationStatusEntry[];
+  failClosedCount: number;
+  generatedAt: number;
+}
+
+export interface DegradationHealthResponse {
+  status: DegradationHealthStatus;
+  snapshot?: DegradationStatusSnapshot;
+  reason?: string;
+}
+
 // ── Auth token ────────────────────────────────────────
 
 let _token: string | null = null;
@@ -887,6 +995,25 @@ export const api = {
   getEngine: (id: string) => fetchJSON<EngineDetail>(`/engines/${encodeURIComponent(id)}`),
   getSessionClarifications: (sessionId: string) =>
     fetchJSON<SessionClarifications>(`/sessions/${encodeURIComponent(sessionId)}/clarifications`),
+
+  // Governance (A8)
+  searchGovernance: (filters: GovernanceSearchFilters = {}) => {
+    const params = new URLSearchParams();
+    if (filters.decisionId) params.set('decisionId', filters.decisionId);
+    if (filters.policyVersion) params.set('policyVersion', filters.policyVersion);
+    if (filters.actor) params.set('actor', filters.actor);
+    if (filters.from != null) params.set('from', String(filters.from));
+    if (filters.to != null) params.set('to', String(filters.to));
+    if (filters.limit != null) params.set('limit', String(filters.limit));
+    if (filters.offset != null) params.set('offset', String(filters.offset));
+    const qs = params.toString();
+    return fetchJSON<GovernanceSearchResponse>(qs ? `/governance/search?${qs}` : '/governance/search');
+  },
+  replayGovernanceDecision: (decisionId: string) =>
+    fetchJSON<DecisionReplaySummary>(`/governance/decisions/${encodeURIComponent(decisionId)}/replay`),
+
+  // Degradation status (A9)
+  getDegradationHealth: () => fetchJSON<DegradationHealthResponse>('/health/degradation'),
 
   // Tasks (auth for mutations)
   getTasks: () => fetchJSON<{ tasks: Task[] }>('/tasks'),

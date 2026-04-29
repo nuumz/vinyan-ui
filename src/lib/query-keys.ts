@@ -36,4 +36,7 @@ export const qk = {
   economyRecent: (limit: number) => ['economy', 'recent', limit] as const,
   engine: (id: string) => ['engines', id] as const,
   sessionClarifications: (id: string) => ['sessions', id, 'clarifications'] as const,
+  governanceSearch: (filter: string) => ['governance', 'search', filter] as const,
+  governanceReplay: (decisionId: string) => ['governance', 'replay', decisionId] as const,
+  degradationHealth: ['health', 'degradation'] as const,
 };

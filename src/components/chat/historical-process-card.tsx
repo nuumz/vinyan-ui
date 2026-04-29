@@ -13,6 +13,7 @@
  * historical process available".
  */
 import { AlertTriangle, Inbox, Loader2 } from 'lucide-react';
+import { AgentTimelineCard } from './agent-timeline-card';
 import { DiagnosticsDrawer } from './diagnostics-drawer';
 import { PlanSurface } from './plan-surface';
 import { ProcessTimeline } from './process-timeline';
@@ -107,6 +108,7 @@ export function HistoricalProcessCard({ taskId }: HistoricalProcessCardProps) {
     <CardShell>
       <div className="space-y-2">
         <PlanSurface turn={finishedTurn} />
+        <AgentTimelineCard steps={finishedTurn.planSteps} isLive={false} />
         <ProcessTimeline turn={finishedTurn} />
         <DiagnosticsDrawer turn={finishedTurn} />
       </div>

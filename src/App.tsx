@@ -27,6 +27,7 @@ const Oracles = lazy(() => import('./pages/oracles'));
 const SleepCycle = lazy(() => import('./pages/sleep-cycle'));
 const Shadow = lazy(() => import('./pages/shadow'));
 const Trace = lazy(() => import('./pages/trace'));
+const Governance = lazy(() => import('./pages/governance'));
 const Memory = lazy(() => import('./pages/memory'));
 const Calibration = lazy(() => import('./pages/calibration'));
 const HMS = lazy(() => import('./pages/hms'));
@@ -67,6 +68,7 @@ export default function App() {
             <Route path="/sleep-cycle" element={<SleepCycle />} />
             <Route path="/shadow" element={<Shadow />} />
             <Route path="/trace" element={<Trace />} />
+            <Route path="/governance" element={<Governance />} />
             <Route path="/memory" element={<Memory />} />
             <Route path="/calibration" element={<Calibration />} />
             <Route path="/hms" element={<HMS />} />
