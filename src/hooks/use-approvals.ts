@@ -21,6 +21,19 @@ export function useResolveApproval() {
       qc.invalidateQueries({ queryKey: qk.tasks });
     },
     onError: (err) => {
+      // 404 = approval already resolved or auto-rejected on the server side
+      // (the gate's 5-min timer fired between fetch and click, or another
+      // tab resolved it). Treat as a soft success-equivalent — tear the
+      // stale card down via cache invalidation and surface a neutral
+      // toast instead of an error. Without this, every race with the
+      // timeout looks like a client error to the user.
+      const status = (err as { status?: number } | undefined)?.status;
+      if (status === 404) {
+        qc.invalidateQueries({ queryKey: qk.approvals });
+        qc.invalidateQueries({ queryKey: qk.tasks });
+        toast.info('Approval already resolved (timed out or handled elsewhere).');
+        return;
+      }
       toast.apiError(err, { fallback: 'Failed to resolve approval' });
     },
   });

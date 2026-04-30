@@ -65,6 +65,15 @@ export function useSSESync({ enabled }: UseSSESyncOptions) {
         const p = event.payload as { taskId?: string; riskScore?: number; reason?: string };
         toast.info(`Approval needed: ${p.reason ?? p.taskId ?? 'high-risk task'}`);
       }
+      if (name === 'task:approval_resolved') {
+        // Refresh both the approvals list (card unmounts) and the tasks
+        // list (status flips out of pending) so every open chat / approvals
+        // tab clears the gate the moment any client resolves it. Without
+        // this, a stale card lingers up to `useApprovals.staleTime` and
+        // the user sees a 404 on the inevitable click.
+        queryClient.invalidateQueries({ queryKey: qk.approvals });
+        queryClient.invalidateQueries({ queryKey: qk.tasks });
+      }
       // Agent/session events: refresh session list (taskCount) + active chat history
       if (
         name === 'agent:turn_complete' ||
