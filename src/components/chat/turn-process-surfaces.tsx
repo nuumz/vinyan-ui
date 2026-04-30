@@ -2,9 +2,10 @@
  * Shared composition of the per-turn process surfaces.
  *
  * Both `<StreamingBubble>` (live) and `<HistoricalProcessCard>` (replay)
- * render this single component so the two views stay in lock-step. Each
- * sub-surface is null-friendly — non-workflow turns render as nothing
- * more than the header + final answer, the same compact shape we want.
+ * render this single component so the two views stay in lock-step. Surface
+ * visibility, default-open hints, and "who owns what" de-dup live in
+ * `buildTurnSurfaceRenderPolicy` — this component only orchestrates the
+ * order; the policy decides whether each one renders.
  *
  * The `mode` prop drives interactive vs read-only behaviour. Live mode
  * threads the session id, "now" tick, and retry callback into the
@@ -16,7 +17,9 @@
  * reduced `StreamingTurn`. Fetching/replay decoding lives in
  * `useTaskEvents` + `replayProcessLog`.
  */
+import { useMemo } from 'react';
 import type { StreamingTurn } from '@/hooks/use-streaming-turn';
+import { buildTurnSurfaceRenderPolicy, type TurnSurfaceMode } from '@/lib/turn-surface-policy';
 import { AgentTimelineCard } from './agent-timeline-card';
 import { CodingCliCard } from './coding-cli-card';
 import { DiagnosticsDrawer } from './diagnostics-drawer';
@@ -28,7 +31,7 @@ import { ProcessTimeline } from './process-timeline';
 import { StageManifestSurface } from './stage-manifest-surface';
 import { TurnHeader } from './turn-header';
 
-export type TurnProcessMode = 'live' | 'historical';
+export type TurnProcessMode = TurnSurfaceMode;
 
 interface TurnProcessSurfacesProps {
   turn: StreamingTurn;
@@ -48,6 +51,10 @@ interface TurnProcessSurfacesProps {
    * Historical mode hint — start the stage manifest disclosed so the past
    * task's plan is visible without an extra click. Live mode keeps it
    * collapsed by default to avoid pushing the live work down the bubble.
+   *
+   * When set, forces stage manifest open even if the policy's default-open
+   * set didn't include it (e.g. a caller wants the panel pre-expanded for
+   * a debug drilldown). Leave undefined to defer to the policy.
    */
   defaultExpandStage?: boolean;
 }
@@ -63,11 +70,14 @@ export function TurnProcessSurfaces({
   sessionId,
   nowMs,
   onRetry,
-  defaultExpandStage = false,
+  defaultExpandStage,
 }: TurnProcessSurfacesProps) {
   const readOnly = mode === 'historical';
+  const policy = useMemo(() => buildTurnSurfaceRenderPolicy(turn, mode), [turn, mode]);
   const showPartialDecision =
     !!turn.pendingPartialDecision && (readOnly || turn.status === 'awaiting-human-input');
+  const stageOpen =
+    defaultExpandStage ?? policy.defaultOpenSections.has('stageManifest');
 
   return (
     <>
@@ -87,20 +97,31 @@ export function TurnProcessSurfaces({
           readOnly={readOnly}
         />
       )}
-      <StageManifestSurface turn={turn} defaultExpanded={defaultExpandStage} />
-      <AgentTimelineCard
-        steps={turn.planSteps}
-        toolCalls={turn.toolCalls}
-        isLive={!readOnly && turn.status === 'running'}
-        nowMs={nowMs}
-        subtasks={turn.multiAgentSubtasks}
-        showExpandAll={readOnly}
-      />
-      <CodingCliCard turn={turn} />
-      <PlanSurface turn={turn} />
-      <ProcessTimeline turn={turn} />
-      <FinalAnswer turn={turn} />
-      <DiagnosticsDrawer turn={turn} />
+      {policy.showStageManifest && (
+        <StageManifestSurface turn={turn} defaultExpanded={stageOpen} />
+      )}
+      {policy.showAgentTimeline && (
+        <AgentTimelineCard
+          steps={turn.planSteps}
+          toolCalls={turn.toolCalls}
+          isLive={!readOnly && turn.status === 'running'}
+          nowMs={nowMs}
+          subtasks={turn.multiAgentSubtasks}
+          groupMode={turn.multiAgentGroupMode}
+          winnerAgentId={turn.winnerAgentId}
+          winnerReasoning={turn.winnerReasoning}
+        />
+      )}
+      {policy.showCodingCli && <CodingCliCard turn={turn} />}
+      {policy.showPlanSurface && (
+        <PlanSurface
+          turn={turn}
+          suppressDelegateOutputs={policy.suppressDelegateOutputsInPlan}
+        />
+      )}
+      {policy.showProcessTimeline && <ProcessTimeline turn={turn} />}
+      {policy.showFinalAnswer && <FinalAnswer turn={turn} />}
+      {policy.showDiagnostics && <DiagnosticsDrawer turn={turn} />}
     </>
   );
 }

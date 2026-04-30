@@ -2,6 +2,7 @@ import { memo, useMemo, useState } from 'react';
 import {
   Bot,
   ChevronRight,
+  ChevronsUpDown,
   CircleAlert,
   CircleCheck,
   CircleDashed,
@@ -86,12 +87,23 @@ export interface AgentTimelineCardProps {
    */
   subtasks?: MultiAgentSubtaskView[];
   /**
-   * Show the "Expand all agents" / "Collapse all agents" header control.
-   * Defaults to false. The historical card flips this on so users can
-   * audit every delegate's manifest in one click; the live bubble keeps
-   * it off because the in-flight rows still use per-row hover discovery.
+   * Multi-agent group mode (competition / debate / comparison / parallel /
+   * pipeline) — drives competition-only affordances such as the trophy
+   * winner badge and the auto-opened CompareDrawer. Absent ⇒ all
+   * competition-specific UI stays off.
    */
-  showExpandAll?: boolean;
+  groupMode?: 'parallel' | 'competition' | 'debate' | 'comparison' | 'pipeline';
+  /**
+   * Winning agent id from the synthesizer's structured verdict (when the
+   * synthesis step emitted one). Highlights the matching DelegateRow,
+   * the timeline bar, and the CompareDrawer column with a trophy badge
+   * and a thicker accent border. Absent ⇒ no winner declared (legacy
+   * turn, parse failed, or genuine tie). Never inferred from agent order.
+   */
+  winnerAgentId?: string | null;
+  /** Free-text reasoning from the verdict — shown as a one-line note
+   *  under the winning DelegateRow. Optional. */
+  winnerReasoning?: string;
 }
 
 interface StatusMeta {
@@ -315,6 +327,13 @@ interface DelegateRowProps {
    * compact pre-manifest layout.
    */
   showManifestDetail?: boolean;
+  /** True when this row is the structured winner of a competition turn —
+   *  surfaces a 🏆 badge with non-color cues (border, bold) so screen
+   *  readers and color-blind operators don't lose the signal. */
+  isWinner?: boolean;
+  /** Optional one-line reasoning from the synthesizer's verdict, surfaced
+   *  inline under the winning row. */
+  winnerReasoning?: string;
 }
 
 /**
@@ -367,6 +386,8 @@ function DelegateRow({
   subtask,
   forceOpen,
   showManifestDetail = true,
+  isWinner = false,
+  winnerReasoning,
 }: DelegateRowProps) {
   const [open, setOpen] = useState(defaultOpen);
   const effectiveOpen = forceOpen ?? open;
@@ -414,12 +435,27 @@ function DelegateRow({
       ? events.find((e) => e.status === 'running') ?? events[events.length - 1]
       : null;
 
+  // Stable DOM id so the plan-surface "jump to agent" affordance can
+  // scrollIntoView + flash this row by stepId. Falls back to subtaskId
+  // when stepId is unset (legacy data) so the anchor stays unique.
+  const anchorId = step.id ? `delegate-row-${step.id}` : subtask?.subtaskId
+    ? `delegate-row-${subtask.subtaskId}`
+    : undefined;
+
   return (
     <li
+      id={anchorId}
       className={cn(
-        'border-b border-border/15 last:border-b-0',
+        'border-b border-border/15 last:border-b-0 scroll-mt-4 transition-shadow',
         meta.rowTint,
         meta.pulse && 'animate-[pulse_2.4s_ease-in-out_infinite]',
+        // Winner gets a left accent + subtle background. We deliberately
+        // skip per-role colors — operator feedback was that monochrome
+        // reads cleaner; only competition winner earns chrome.
+        isWinner && 'border-l-2 border-l-accent bg-accent/[0.04]',
+        // The `delegate-row-flash` class is toggled briefly by plan-surface's
+        // jump-to-agent handler. Defined in index.css so the keyframes
+        // respect prefers-reduced-motion (no animation when reduced).
       )}
     >
       <button
@@ -444,11 +480,22 @@ function DelegateRow({
           <span className="inline-block w-[11px] shrink-0" aria-hidden />
         )}
         <span className="inline-flex items-center gap-1.5 shrink-0">
-          <Bot
-            size={11}
-            className={cn('text-text-dim/70', meta.spin && 'text-blue animate-spin')}
-          />
-          <span className="font-mono text-[10.5px] px-1.5 py-0.5 rounded border border-border/60 bg-bg/40 text-text/90 min-w-[5.25rem] text-center">
+          {isWinner ? (
+            <span aria-label="Winner" title="Winner of this competition" className="text-base leading-none">
+              🏆
+            </span>
+          ) : (
+            <Bot
+              size={11}
+              className={cn('text-text-dim/70', meta.spin && 'text-blue animate-spin')}
+            />
+          )}
+          <span
+            className={cn(
+              'font-mono text-[10.5px] px-1.5 py-0.5 rounded border border-border/60 bg-bg/40 text-text/90 min-w-[5.25rem] text-center',
+              isWinner && 'font-semibold border-accent/60 bg-accent/10 text-text',
+            )}
+          >
             {resolveAgentLabel(step, subtask)}
           </span>
         </span>
@@ -480,6 +527,12 @@ function DelegateRow({
           </span>
         )}
       </button>
+      {isWinner && winnerReasoning && (
+        <div className="px-3 pb-1.5 -mt-0.5 text-[11px] text-text-dim italic line-clamp-2">
+          <span className="text-accent/85 font-medium not-italic mr-1">Verdict:</span>
+          {winnerReasoning}
+        </div>
+      )}
       {effectiveOpen && expandable && (
         <div className="ml-7 mb-2 mr-3 border-l border-border/40 pl-3 space-y-1.5 text-xs">
           {step.subTaskId && (
@@ -578,9 +631,13 @@ function ManifestRow({ label, value, mono }: { label: string; value: string; mon
 function CompareDrawer({
   rows,
   subtasksByStep,
+  winnerAgentId,
 }: {
   rows: PlanStep[];
   subtasksByStep: Map<string, MultiAgentSubtaskView>;
+  /** When set, the matching column gets a thicker accent border + 🏆 row
+   *  header so the verdict reads at a glance in side-by-side mode. */
+  winnerAgentId?: string | null;
 }) {
   const cols = rows.filter((r) => r.outputPreview && r.outputPreview.trim().length > 0);
   if (cols.length < 2) return null;
@@ -593,27 +650,45 @@ function CompareDrawer({
         className="grid gap-3 overflow-x-auto"
         style={{ gridTemplateColumns: `repeat(${cols.length}, minmax(220px, 1fr))` }}
       >
-        {cols.map((row) => (
-          <div
-            key={row.id}
-            className="rounded border border-border/40 bg-bg/30 p-2 text-xs space-y-1.5 min-w-0"
-          >
-            <div className="flex items-center gap-1.5 pb-1 border-b border-border/30">
-              <Bot size={10} className="text-text-dim/70" />
-              <span className="font-mono text-[10.5px] px-1.5 py-0.5 rounded border border-border/60 bg-bg/40">
-                {resolveAgentLabel(row, subtasksByStep.get(row.id))}
-              </span>
-              {row.startedAt && row.finishedAt && (
-                <span className="ml-auto text-[10px] text-text-dim/70 font-mono tabular-nums">
-                  {formatDuration(row.finishedAt - row.startedAt)}
-                </span>
+        {cols.map((row) => {
+          const subtask = subtasksByStep.get(row.id);
+          const isWinner =
+            !!winnerAgentId &&
+            (row.agentId === winnerAgentId || subtask?.agentId === winnerAgentId);
+          return (
+            <div
+              key={row.id}
+              className={cn(
+                'rounded border bg-bg/30 p-2 text-xs space-y-1.5 min-w-0',
+                isWinner ? 'border-accent/60 ring-1 ring-accent/30 bg-accent/[0.04]' : 'border-border/40',
               )}
+            >
+              <div className="flex items-center gap-1.5 pb-1 border-b border-border/30">
+                {isWinner ? (
+                  <span aria-label="Winner" title="Winner">🏆</span>
+                ) : (
+                  <Bot size={10} className="text-text-dim/70" />
+                )}
+                <span
+                  className={cn(
+                    'font-mono text-[10.5px] px-1.5 py-0.5 rounded border bg-bg/40',
+                    isWinner ? 'border-accent/60 text-text font-semibold' : 'border-border/60',
+                  )}
+                >
+                  {resolveAgentLabel(row, subtask)}
+                </span>
+                {row.startedAt && row.finishedAt && (
+                  <span className="ml-auto text-[10px] text-text-dim/70 font-mono tabular-nums">
+                    {formatDuration(row.finishedAt - row.startedAt)}
+                  </span>
+                )}
+              </div>
+              <div className="max-h-64 overflow-auto text-[11.5px] text-text/85">
+                <Markdown content={row.outputPreview ?? ''} />
+              </div>
             </div>
-            <div className="max-h-64 overflow-auto text-[11.5px] text-text/85">
-              <Markdown content={row.outputPreview ?? ''} />
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -645,7 +720,9 @@ function AgentTimelineCardImpl({
   isLive = false,
   nowMs = Date.now(),
   subtasks = [],
-  showExpandAll = false,
+  groupMode,
+  winnerAgentId,
+  winnerReasoning,
 }: AgentTimelineCardProps) {
   const [forceAllOpen, setForceAllOpen] = useState<boolean | undefined>(undefined);
   const delegateRows = useMemo(
@@ -721,7 +798,21 @@ function AgentTimelineCardImpl({
     }, 0);
   }, [delegateRows]);
 
-  const [showCompare, setShowCompare] = useState(false);
+  // Auto-open the side-by-side compare for COMPETITION turns when the
+  // payload is light enough — the comparison IS the point of competition
+  // mode, so making the user click for it adds friction. Guards: ≤3 agents
+  // (4-up grids cramp), every preview ≤800 chars (long answers blow vertical
+  // space), and groupMode === 'competition' (debate / parallel / pipeline
+  // keep click-to-open behavior).
+  const competitionAutoCompare = useMemo(() => {
+    if (groupMode !== 'competition') return false;
+    const completed = delegateRows.filter(
+      (r) => r.status === 'done' && r.outputPreview && r.outputPreview.trim().length > 0,
+    );
+    if (completed.length < 2 || completed.length > 3) return false;
+    return completed.every((r) => (r.outputPreview ?? '').length <= 800);
+  }, [groupMode, delegateRows]);
+  const [showCompare, setShowCompare] = useState(competitionAutoCompare);
 
   if (delegateRows.length === 0) return null;
 
@@ -781,6 +872,28 @@ function AgentTimelineCardImpl({
               {formatDuration(totalDuration)}
             </span>
           )}
+          {delegateRows.length > 1 && (
+            // 2-state toggle: undefined (per-row defaults — failed/winner
+            // stay open) ↔ true (force every row open). We deliberately
+            // never set forceAllOpen=false because that would override
+            // the smart defaults — collapse returns to per-row state
+            // instead, so a failed row stays expanded after "collapse".
+            <button
+              type="button"
+              onClick={() => setForceAllOpen((v) => (v === true ? undefined : true))}
+              title={forceAllOpen === true ? 'Collapse to defaults' : 'Expand all agents'}
+              aria-label={forceAllOpen === true ? 'Collapse to defaults' : 'Expand all agents'}
+              aria-pressed={forceAllOpen === true}
+              className={cn(
+                'inline-flex items-center justify-center h-5 w-5 rounded border text-text-dim/80 hover:text-text hover:border-border transition-colors',
+                forceAllOpen === true
+                  ? 'border-accent/50 text-accent bg-accent/10'
+                  : 'border-border/50 bg-bg/40',
+              )}
+            >
+              <ChevronsUpDown size={11} />
+            </button>
+          )}
         </span>
       </div>
 
@@ -790,35 +903,27 @@ function AgentTimelineCardImpl({
         </div>
       )}
 
-      {showExpandAll && delegateRows.length > 1 && (
-        <div className="flex justify-end px-3 py-1 border-b border-border/20 bg-bg/10">
-          <button
-            type="button"
-            onClick={() => setForceAllOpen((v) => (v === true ? false : true))}
-            className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide font-medium text-accent hover:text-accent/80"
-          >
-            <ChevronRight
-              size={9}
-              className={cn('transition-transform', forceAllOpen === true && 'rotate-90')}
-            />
-            {forceAllOpen === true ? 'Collapse all agents' : 'Expand all agents'}
-          </button>
-        </div>
-      )}
-
       <ul>
-        {delegateRows.map((row) => (
-          <DelegateRow
-            key={row.id}
-            step={row}
-            events={eventsByStep.get(row.id) ?? []}
-            isLive={isLive}
-            defaultOpen={row.status === 'failed'}
-            nowMs={nowMs}
-            subtask={subtasksByStep.get(row.id)}
-            forceOpen={forceAllOpen}
-          />
-        ))}
+        {delegateRows.map((row) => {
+          const subtask = subtasksByStep.get(row.id);
+          const isWinner =
+            !!winnerAgentId &&
+            (row.agentId === winnerAgentId || subtask?.agentId === winnerAgentId);
+          return (
+            <DelegateRow
+              key={row.id}
+              step={row}
+              events={eventsByStep.get(row.id) ?? []}
+              isLive={isLive}
+              defaultOpen={row.status === 'failed' || isWinner}
+              nowMs={nowMs}
+              subtask={subtask}
+              forceOpen={forceAllOpen}
+              isWinner={isWinner}
+              winnerReasoning={isWinner ? winnerReasoning : undefined}
+            />
+          );
+        })}
       </ul>
 
       {isLive && counts.running > 0 && (
@@ -842,7 +947,13 @@ function AgentTimelineCardImpl({
               {showCompare ? 'Hide compare' : 'Compare side-by-side'}
             </button>
           </div>
-          {showCompare && <CompareDrawer rows={completedRowsForCompare} subtasksByStep={subtasksByStep} />}
+          {showCompare && (
+            <CompareDrawer
+              rows={completedRowsForCompare}
+              subtasksByStep={subtasksByStep}
+              winnerAgentId={winnerAgentId ?? undefined}
+            />
+          )}
         </>
       )}
     </div>

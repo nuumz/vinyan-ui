@@ -203,4 +203,22 @@ describe('reduceCodingCliSessions — terminal + verification', () => {
     expect(state['sess-1']!.stalled?.idleMs).toBe(60_000);
     expect(state['sess-1']!.state).toBe('stalled');
   });
+
+  test('unsupported-capability state is preserved verbatim', () => {
+    // The deterministic intent pre-classifier may dispatch a
+    // delegation request even when no provider binary is available.
+    // The controller emits state_changed → unsupported-capability
+    // INSTEAD of falling through to shell_exec. The reducer must
+    // surface that state cleanly so the UI can render the
+    // "unsupported" chip + reason — not a generic shell error.
+    const state = fold([
+      baseCreated,
+      ev('coding-cli:state_changed', {
+        state: 'unsupported-capability',
+        prevState: 'created',
+        reason: 'claude binary not on PATH',
+      }),
+    ]);
+    expect(state['sess-1']!.state).toBe('unsupported-capability');
+  });
 });

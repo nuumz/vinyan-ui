@@ -1,4 +1,4 @@
-import { memo, useState } from 'react';
+import { memo, useCallback, useState } from 'react';
 import {
   Check,
   ChevronRight,
@@ -8,13 +8,32 @@ import {
   X,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import type { PlanStep, StreamingTurn, ToolCall } from '@/hooks/use-streaming-turn';
+import type {
+  MultiAgentSubtaskView,
+  PlanStep,
+  StreamingTurn,
+  ToolCall,
+} from '@/hooks/use-streaming-turn';
 import { cn } from '@/lib/utils';
 import { Markdown } from './markdown';
 import { ToolCallCard } from './tool-call-card';
 
 interface PlanSurfaceProps {
   turn: StreamingTurn;
+  /**
+   * When true, AgentTimelineCard above is rendering the per-delegate
+   * detail (tool history + manifest panel + final-answer disclosure).
+   * Plan rows for `delegate-sub-agent` steps then drop:
+   *   - the duplicate per-row agent chip (already de-duped by step suppression)
+   *   - the duplicate tool list inside the expanded drawer
+   *   - the per-step output (which is empty for delegates anyway, but the
+   *     row would still render an expandable affordance)
+   *
+   * Net effect: delegate rows render as compact one-liners in the linear
+   * checklist; "where can I read what each agent did?" routes the eye to
+   * AgentTimelineCard above, which is the canonical owner.
+   */
+  suppressDelegateOutputs?: boolean;
 }
 
 interface StatusGlyph {
@@ -62,35 +81,88 @@ interface StepRowProps {
    * structure is preserved.
    */
   suppressDelegateChip?: boolean;
+  /**
+   * Stage-manifest record for this step's delegate sub-agent (when this
+   * step is a `delegate-sub-agent`). Lets the row prefix the label with
+   * `[agentName]` so steps 2/3/4 in a multi-agent plan are no longer
+   * indistinguishable copies of each other. Optional — undefined for
+   * non-delegate steps and for legacy turns without manifest data.
+   */
+  subtask?: MultiAgentSubtaskView;
+  /** Click-to-jump target → scroll the matching DelegateRow into view. */
+  onJumpTo?: (stepId: string) => void;
 }
 
-function StepRow({ step, index, tools, output, defaultOpen, isStreaming, suppressDelegateChip }: StepRowProps) {
+/** Agent identity prefix used in the plan row. Prefers the registry-resolved
+ * name, falls back to the agentId, then the deterministic fallback label.
+ * Returns undefined when the step is not delegated to a sub-agent. */
+function deriveAgentPrefix(
+  step: PlanStep,
+  subtask: MultiAgentSubtaskView | undefined,
+): string | undefined {
+  if (subtask?.agentName) return subtask.agentName;
+  if (subtask?.agentId) return subtask.agentId;
+  if (subtask?.fallbackLabel) return subtask.fallbackLabel;
+  if (step.agentId) return step.agentId;
+  return undefined;
+}
+
+function StepRow({
+  step,
+  index,
+  tools,
+  output,
+  defaultOpen,
+  isStreaming,
+  suppressDelegateChip,
+  subtask,
+  onJumpTo,
+}: StepRowProps) {
   const [open, setOpen] = useState(defaultOpen);
   const { Icon, tone, spin, strike } = glyphFor(step.status);
   const hasTools = tools.length > 0;
   const hasOutput = output.length > 0;
   const isExpandable = hasTools || hasOutput;
+  const isDelegate = step.strategy === 'delegate-sub-agent';
+  // Delegate rows that the timeline owns are clickable for "jump to agent"
+  // even when not expandable. Plain delegate rows still toggle on click
+  // (current behavior). Non-delegate non-expandable rows stay inert.
+  const isJumpable = isDelegate && !!onJumpTo;
+  // Prefer subtask wall-clock when the step record is missing finishedAt
+  // (delegate steps emit completion on the subtask, not always on the
+  // parent step). This is what makes steps 2/3/4 finally show durations.
+  const startedAt = step.startedAt ?? subtask?.startedAt;
+  const finishedAt = step.finishedAt ?? subtask?.completedAt;
   const duration =
-    step.startedAt != null && step.finishedAt != null
-      ? formatDuration(step.finishedAt - step.startedAt)
+    startedAt != null && finishedAt != null
+      ? formatDuration(finishedAt - startedAt)
       : null;
-
+  const prefix = deriveAgentPrefix(step, subtask);
   // Done / pending steps line-clamp the label so long descriptions don't
   // bloat the plan box. The running step keeps its full label visible so
   // the user can read the work currently underway.
   const clampLabel = step.status !== 'running' && step.status !== 'failed';
 
+  const handleClick = useCallback(() => {
+    if (isJumpable) {
+      onJumpTo?.(step.id);
+      return;
+    }
+    if (isExpandable) setOpen((v) => !v);
+  }, [isJumpable, isExpandable, onJumpTo, step.id]);
+
   return (
     <li className="space-y-1">
       <button
         type="button"
-        onClick={() => isExpandable && setOpen((v) => !v)}
+        onClick={handleClick}
         className={cn(
           'flex w-full items-start gap-2 text-left text-xs leading-5',
-          isExpandable ? 'cursor-pointer' : 'cursor-default',
+          isExpandable || isJumpable ? 'cursor-pointer' : 'cursor-default',
         )}
-        disabled={!isExpandable}
+        disabled={!isExpandable && !isJumpable}
         aria-expanded={isExpandable ? open : undefined}
+        title={isJumpable ? 'Jump to this agent in the timeline above' : undefined}
       >
         {isExpandable ? (
           <ChevronRight
@@ -116,14 +188,15 @@ function StepRow({ step, index, tools, output, defaultOpen, isStreaming, suppres
             clampLabel && 'line-clamp-1',
           )}
         >
+          {prefix && (
+            <span className="mr-1.5 font-medium text-text-dim">[{prefix}]</span>
+          )}
           {step.label}
         </span>
-        {step.agentId && !suppressDelegateChip && (
-          // Per-agent identity chip — surfaced from the planner's
-          // delegate-sub-agent assignment. Without this the user cannot
-          // tell which persona is answering each step in a multi-agent
-          // workflow ("Researcher / Author / Mentor" was invisible).
-          // Suppressed when AgentTimelineCard renders the same chip above.
+        {step.agentId && !suppressDelegateChip && !prefix && (
+          // Legacy chip path — kept for plans where the subtask manifest
+          // never arrived (older turns). When `prefix` is set we already
+          // surfaced the persona inline, so the chip would be redundant.
           <span
             className="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-accent/10 text-accent border border-accent/25 text-[10px] font-medium"
             title={`Sub-agent: ${step.agentId}`}
@@ -180,7 +253,22 @@ function StepRow({ step, index, tools, output, defaultOpen, isStreaming, suppres
  * the currently-running step. Tools without a step (ad-hoc / non-workflow)
  * render in an "Other" group at the bottom.
  */
-function PlanSurfaceImpl({ turn }: PlanSurfaceProps) {
+function PlanSurfaceImpl({ turn, suppressDelegateOutputs = false }: PlanSurfaceProps) {
+  // Hooks must run unconditionally — the early-return below skips the rest
+  // of the body, so anything using a hook MUST live above the gate.
+  const handleJumpToSubtask = useCallback((stepId: string) => {
+    const el = document.getElementById(`delegate-row-${stepId}`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    // Restart the flash by removing the class first (force reflow) then
+    // re-adding. The stylesheet handles prefers-reduced-motion (no animation,
+    // static outline instead).
+    el.classList.remove('delegate-row-flash');
+    void (el as HTMLElement).offsetWidth;
+    el.classList.add('delegate-row-flash');
+    window.setTimeout(() => el.classList.remove('delegate-row-flash'), 1400);
+  }, []);
+
   const hasPlan = turn.planSteps.length >= 2;
   const orphanTools = turn.toolCalls.filter((t) => !t.planStepId);
 
@@ -207,6 +295,14 @@ function PlanSurfaceImpl({ turn }: PlanSurfaceProps) {
     list.push(tool);
     toolsByStep.set(tool.planStepId, list);
   }
+  // O(1) lookup of subtask manifest by stepId. The plan and the manifest
+  // share `stepId` as the join key — see stage-manifest.ts buildStageManifest.
+  // If a step's subtask is missing (older turns / partial manifest), the
+  // delegate row falls back to the legacy chip path.
+  const subtasksByStepId = new Map<string, MultiAgentSubtaskView>();
+  for (const s of turn.multiAgentSubtasks) {
+    if (s.stepId) subtasksByStepId.set(s.stepId, s);
+  }
   const isTurnStreaming = turn.status === 'running';
   const doneCount = turn.planSteps.filter((s) => s.status === 'done').length;
   // After end (replay/refresh) the user previously saw the last-running
@@ -231,31 +327,49 @@ function PlanSurfaceImpl({ turn }: PlanSurfaceProps) {
         </span>
       </div>
       <ol className="space-y-1">
-        {turn.planSteps.map((step, i) => (
-          <StepRow
-            key={step.id}
-            step={step}
-            index={i}
-            tools={toolsByStep.get(step.id) ?? []}
-            output={turn.stepOutputs[step.id] ?? ''}
-            defaultOpen={
-              step.status === 'running' ||
-              step.status === 'failed' ||
-              step.id === lastFinishedStepId
-            }
-            isStreaming={isTurnStreaming && step.status === 'running'}
-            // When AgentTimelineCard already renders this delegate's agent
-            // chip + duration above, suppress the duplicate here. Heuristic
-            // is "this turn has multi-agent subtask records AND this step
-            // is one of them" — a single delegate (no AgentTimelineCard)
-            // keeps the chip so the user can still see the agent.
-            suppressDelegateChip={
-              step.strategy === 'delegate-sub-agent' &&
-              turn.multiAgentSubtasks.some((s) => s.stepId === step.id) &&
-              turn.multiAgentSubtasks.length >= 2
-            }
-          />
-        ))}
+        {turn.planSteps.map((step, i) => {
+          const isDelegate = step.strategy === 'delegate-sub-agent';
+          // Two-tier suppression for delegate rows in multi-agent plans:
+          //   1. Caller policy (`suppressDelegateOutputs`) — AgentTimelineCard
+          //      is the canonical owner, so PlanSurface drops both chip AND
+          //      tool/output expansion.
+          //   2. Per-step fallback — even without the policy hint, dedupe
+          //      the chip when the manifest carries 2+ delegate subtasks
+          //      (legacy callers that haven't threaded the policy yet).
+          const ownedByTimeline =
+            suppressDelegateOutputs && isDelegate;
+          const dedupChipOnly =
+            !ownedByTimeline &&
+            isDelegate &&
+            turn.multiAgentSubtasks.some((s) => s.stepId === step.id) &&
+            turn.multiAgentSubtasks.length >= 2;
+          const subtask = subtasksByStepId.get(step.id);
+          return (
+            <StepRow
+              key={step.id}
+              step={step}
+              index={i}
+              // Hide tool list for owned-delegate rows — it lives in
+              // AgentTimelineCard's expanded drawer above.
+              tools={ownedByTimeline ? [] : toolsByStep.get(step.id) ?? []}
+              // Per-step output is empty for delegates today, but be
+              // explicit so a future change that streams synthesis into
+              // a delegate's stepOutputs doesn't accidentally re-duplicate.
+              output={ownedByTimeline ? '' : turn.stepOutputs[step.id] ?? ''}
+              defaultOpen={
+                step.status === 'running' ||
+                step.status === 'failed' ||
+                step.id === lastFinishedStepId
+              }
+              isStreaming={isTurnStreaming && step.status === 'running'}
+              suppressDelegateChip={ownedByTimeline || dedupChipOnly}
+              subtask={subtask}
+              // Click-to-jump only when a timeline owns the row above —
+              // otherwise the click should still toggle the inline expansion.
+              onJumpTo={ownedByTimeline ? handleJumpToSubtask : undefined}
+            />
+          );
+        })}
       </ol>
       {orphanTools.length > 0 && (
         <details className="group">
@@ -289,6 +403,7 @@ function PlanSurfaceImpl({ turn }: PlanSurfaceProps) {
 export const PlanSurface = memo(
   PlanSurfaceImpl,
   (prev, next) =>
+    prev.suppressDelegateOutputs === next.suppressDelegateOutputs &&
     prev.turn.planSteps === next.turn.planSteps &&
     prev.turn.toolCalls === next.turn.toolCalls &&
     prev.turn.stepOutputs === next.turn.stepOutputs &&

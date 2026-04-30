@@ -423,6 +423,17 @@ export interface StreamingTurn {
   multiAgentSubtasks: MultiAgentSubtaskView[];
   /** Group mode for the multi-agent set (competition/debate/comparison). */
   multiAgentGroupMode?: MultiAgentGroupMode;
+  /**
+   * Structured verdict from the synthesis step on COMPETITION turns. Set by
+   * `workflow:winner_determined` after the synthesis LLM returns a JSON
+   * block that validates against the WinnerVerdict schema (winner ∈
+   * participating agentIds). Absent ⇒ no winner declared (legacy turn,
+   * non-competition, or structured-parse failed). UI must NEVER infer.
+   * `winnerAgentId === null` is a deliberate "no clear winner" verdict.
+   */
+  winnerAgentId?: string | null;
+  winnerReasoning?: string;
+  winnerScores?: Record<string, number>;
   /** Internal stream bookkeeping used to de-dupe legacy/rich text events. */
   stream?: StreamState;
   /**
@@ -861,11 +872,15 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
       const level = typeof routing.level === 'number' ? (routing.level as number) : undefined;
       const model = typeof routing.model === 'string' ? (routing.model as string) : undefined;
       // Upsert: backend may emit `task:start` twice — once preliminary at
-      // executeTaskCore entry (model='pending', level=0), then again from
-      // the full-pipeline branch with the real routing decision. Take the
-      // later real model over the earlier sentinel.
+      // executeTaskCore entry (model=null/'pending', level=0), then again
+      // from the full-pipeline branch with the real routing decision. Take
+      // the later real model over the earlier sentinel. Multi-agent parents
+      // never get a refined task:start (no single engine on the parent), so
+      // we MUST drop the placeholder rather than fall back to it — otherwise
+      // 'pending' surfaces as a literal engine label in StatsRow.
       const isPlaceholderModel = model === 'pending' || model === 'unknown';
-      const nextEngineId = !isPlaceholderModel && model ? model : turn.engineId ?? model;
+      const nextEngineId =
+        !isPlaceholderModel && model ? model : turn.engineId;
       return {
         ...turn,
         taskId: id,
@@ -1529,6 +1544,39 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
         s.subtaskId === subtaskId ? { ...s, ...patch } : s,
       );
       return { ...turn, multiAgentSubtasks };
+    }
+    case 'workflow:winner_determined': {
+      // COMPETITION-mode synthesizer's structured verdict. Backend emits this
+      // ONLY after the JSON block validated and `winnerAgentId` was confirmed
+      // to be in the participating delegate set. We trust the backend gate
+      // and just project the fields onto the turn — never infer from order.
+      const eventTaskId = typeof p.taskId === 'string' ? (p.taskId as string) : undefined;
+      if (eventTaskId && turn.taskId && eventTaskId !== turn.taskId) return turn;
+      // `winnerAgentId === null` is a deliberate "no clear winner" verdict —
+      // record it explicitly so UI can render a tie chip rather than fall
+      // back to "no event = no winner declared" semantics.
+      const winnerAgentId =
+        typeof p.winnerAgentId === 'string'
+          ? (p.winnerAgentId as string)
+          : p.winnerAgentId === null
+            ? null
+            : undefined;
+      const winnerReasoning =
+        typeof p.reasoning === 'string' ? (p.reasoning as string) : undefined;
+      const winnerScores =
+        p.scores && typeof p.scores === 'object'
+          ? Object.fromEntries(
+              Object.entries(p.scores as Record<string, unknown>).filter(
+                (entry): entry is [string, number] => typeof entry[1] === 'number',
+              ),
+            )
+          : undefined;
+      return {
+        ...turn,
+        ...(winnerAgentId !== undefined ? { winnerAgentId } : {}),
+        ...(winnerReasoning !== undefined ? { winnerReasoning } : {}),
+        ...(winnerScores !== undefined ? { winnerScores } : {}),
+      };
     }
     case 'workflow:plan_ready': {
       // Phase E: workflow executor pauses with `awaitingApproval=true` for
