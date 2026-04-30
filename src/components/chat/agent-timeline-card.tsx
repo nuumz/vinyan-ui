@@ -67,6 +67,15 @@ export interface AgentTimelineCardProps {
   toolCalls?: ToolCall[];
   /** True while the parent turn is still running — drives live pulses. */
   isLive?: boolean;
+  /**
+   * Wall-clock "now" in ms. The parent ticks this on a 1s interval so
+   * each WORKING row can render its own live elapsed counter
+   * (`formatDuration(nowMs - step.startedAt)`) instead of a static "…"
+   * placeholder. NOT a timeout countdown — this is forward elapsed
+   * time scoped to each delegate's runtime, distinct from the parent
+   * turn's overall timer in TurnHeader.
+   */
+  nowMs?: number;
 }
 
 interface StatusMeta {
@@ -271,18 +280,27 @@ interface DelegateRowProps {
   events: ToolCall[];
   isLive: boolean;
   defaultOpen: boolean;
+  /** Wall-clock now (ms). Drives the live elapsed counter while WORKING. */
+  nowMs: number;
 }
 
-function DelegateRow({ step, events, isLive, defaultOpen }: DelegateRowProps) {
+function DelegateRow({ step, events, isLive, defaultOpen, nowMs }: DelegateRowProps) {
   const [open, setOpen] = useState(defaultOpen);
   const meta = statusMeta(step);
   const Icon = meta.Icon;
 
+  // Forward elapsed counter:
+  //   - terminal status with both timestamps → final wall-clock
+  //   - running on a live turn with a startedAt → live count from nowMs
+  //     (parent ticks nowMs every second, so the row repaints once per
+  //     second; if startedAt is in the future due to clock skew we clamp
+  //     to 0ms rather than render negative)
+  //   - everything else → no counter
   const duration =
     step.startedAt && step.finishedAt
       ? formatDuration(step.finishedAt - step.startedAt)
       : step.startedAt && isLive
-        ? '…'
+        ? formatDuration(Math.max(0, nowMs - step.startedAt))
         : null;
 
   const hasFinalOutput = !!step.outputPreview && step.outputPreview.trim().length > 0;
@@ -457,6 +475,7 @@ function AgentTimelineCardImpl({
   steps,
   toolCalls = [],
   isLive = false,
+  nowMs = Date.now(),
 }: AgentTimelineCardProps) {
   const delegateRows = useMemo(
     () => steps.filter((s) => s.strategy === 'delegate-sub-agent'),
@@ -599,6 +618,7 @@ function AgentTimelineCardImpl({
             events={eventsByStep.get(row.id) ?? []}
             isLive={isLive}
             defaultOpen={row.status === 'failed'}
+            nowMs={nowMs}
           />
         ))}
       </ul>

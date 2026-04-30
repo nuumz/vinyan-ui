@@ -92,6 +92,68 @@ describe('reduceTurn — task lifecycle', () => {
     expect(t.finalContent).toBe('best-effort answer');
   });
 
+  test('task:complete sweeps lingering pending/running plan steps to done on success', () => {
+    // Reproduces the "4/5" symptom: backend doesn't always emit
+    // workflow:step_complete for the final step (synthesizer absorbs it),
+    // so the UI used to show step5 as still pending after the success card.
+    let turn = emptyTurn({ taskId: 'task-1' });
+    turn = {
+      ...turn,
+      planSteps: [
+        { id: 'step1', label: '1', status: 'done', toolCallIds: [] },
+        { id: 'step2', label: '2', status: 'done', toolCallIds: [] },
+        { id: 'step3', label: '3', status: 'done', toolCallIds: [] },
+        { id: 'step4', label: '4', status: 'done', toolCallIds: [] },
+        { id: 'step5', label: '5', status: 'pending', toolCallIds: [] },
+      ],
+    };
+    const next = reduceTurn(
+      turn,
+      ev('task:complete', { result: { id: 'task-1', status: 'completed', content: 'final synthesis' } }),
+    );
+    expect(next.status).toBe('done');
+    expect(next.planSteps.every((s) => s.status === 'done')).toBe(true);
+    expect(next.planSteps[4]!.finishedAt).toBeDefined();
+  });
+
+  test('task:complete on error marks running steps as failed but leaves pending alone', () => {
+    let turn = emptyTurn({ taskId: 'task-1' });
+    turn = {
+      ...turn,
+      planSteps: [
+        { id: 'step1', label: '1', status: 'done', toolCallIds: [] },
+        { id: 'step2', label: '2', status: 'running', toolCallIds: [] },
+        { id: 'step3', label: '3', status: 'pending', toolCallIds: [] },
+      ],
+    };
+    const next = reduceTurn(
+      turn,
+      ev('task:complete', { result: { id: 'task-1', status: 'failed', content: 'wall-clock timeout' } }),
+    );
+    expect(next.status).toBe('error');
+    expect(next.planSteps[0]!.status).toBe('done');
+    expect(next.planSteps[1]!.status).toBe('failed');
+    expect(next.planSteps[2]!.status).toBe('pending');
+  });
+
+  test('task:complete leaves skipped steps as skipped on success', () => {
+    let turn = emptyTurn({ taskId: 'task-1' });
+    turn = {
+      ...turn,
+      planSteps: [
+        { id: 'step1', label: '1', status: 'done', toolCallIds: [] },
+        { id: 'step2', label: '2', status: 'skipped', toolCallIds: [] },
+        { id: 'step3', label: '3', status: 'pending', toolCallIds: [] },
+      ],
+    };
+    const next = reduceTurn(
+      turn,
+      ev('task:complete', { result: { id: 'task-1', status: 'completed', content: 'ok' } }),
+    );
+    expect(next.planSteps[1]!.status).toBe('skipped');
+    expect(next.planSteps[2]!.status).toBe('done');
+  });
+
   test('task:timeout reconstructs message when reason missing', () => {
     const t = reduceTurn(
       emptyTurn({ taskId: 'task-1' }),

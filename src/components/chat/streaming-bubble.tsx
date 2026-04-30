@@ -50,6 +50,7 @@ export function StreamingBubble({ turn, sessionId, nowMs, onRetry }: StreamingBu
           steps={turn.planSteps}
           toolCalls={turn.toolCalls}
           isLive={turn.status === 'running'}
+          nowMs={nowMs}
         />
         <CodingCliCard turn={turn} />
         <PlanSurface turn={turn} />

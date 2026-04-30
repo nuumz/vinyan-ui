@@ -1164,6 +1164,39 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
       const isFailureStatus = status === 'failed' || status === 'escalated';
       const uiStatus: 'done' | 'input-required' | 'error' =
         status === 'input-required' ? 'input-required' : isFailureStatus ? 'error' : 'done';
+      // Plan-step sweep on terminal task. Without this, the last step in
+      // the plan can stay visually `pending`/`running` after the task is
+      // already `completed`, because the backend doesn't always emit a
+      // final `workflow:step_complete` (e.g. when the synthesizer absorbs
+      // the last step's job, or the executor short-circuits). The user
+      // sees a final answer card AND a still-spinning step5 — incoherent.
+      //
+      // Mapping when uiStatus is 'done':
+      //   pending → done (task succeeded, step must have run effectively)
+      //   running → done
+      //   skipped → unchanged (planner explicitly skipped it)
+      //   failed  → unchanged (already terminal)
+      //
+      // For 'error' / 'input-required' we don't synthesize success: any
+      // running step becomes 'failed', any pending step stays pending so
+      // the user can tell what got reached vs not.
+      const sweepedPlanSteps = (() => {
+        if (uiStatus === 'done') {
+          return turn.planSteps.map((s) =>
+            s.status === 'pending' || s.status === 'running'
+              ? { ...s, status: 'done' as const, finishedAt: s.finishedAt ?? event.ts }
+              : s,
+          );
+        }
+        if (uiStatus === 'error') {
+          return turn.planSteps.map((s) =>
+            s.status === 'running'
+              ? { ...s, status: 'failed' as const, finishedAt: s.finishedAt ?? event.ts }
+              : s,
+          );
+        }
+        return turn.planSteps;
+      })();
       return {
         ...turn,
         taskId,
@@ -1172,6 +1205,7 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
         finalContent: isFailureStatus ? turn.finalContent : content,
         thinking,
         resultStatus: status as StreamingTurn['resultStatus'],
+        planSteps: sweepedPlanSteps,
         // Terminal — drop any unresolved approval card so the bubble can't
         // show "Approve / Reject" alongside the final answer if the
         // orchestrator races past the gate (e.g. auto-approve timeout).
@@ -1390,11 +1424,33 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
       // but this event fires inside the step so it gives us a more precise
       // `startedAt` and lets us flip status before the next plan_update
       // snapshot (which the executor emits after dispatch returns).
+      //
+      // Defense-in-depth for replay: when `agent:plan_update` events are
+      // missing from the persisted log (manifest drift, recorder dropouts),
+      // create the step from the start event so the historical card still
+      // renders a plan checklist instead of an empty card. The payload
+      // carries enough fields (stepId, strategy, description) to bootstrap
+      // a PlanStep without the snapshot.
       const stepId = p.stepId as string | undefined;
       if (!stepId) return turn;
+      const startedAt = event.ts || Date.now();
+      const existing = turn.planSteps.find((s) => s.id === stepId);
+      if (!existing) {
+        const description = typeof p.description === 'string' ? (p.description as string) : stepId;
+        const strategy = typeof p.strategy === 'string' ? (p.strategy as string) : undefined;
+        const newStep: PlanStep = {
+          id: stepId,
+          label: description,
+          status: 'running',
+          toolCallIds: [],
+          startedAt,
+          ...(strategy ? { strategy } : {}),
+        };
+        return { ...turn, planSteps: [...turn.planSteps, newStep] };
+      }
       const planSteps = turn.planSteps.map((s) =>
         s.id === stepId
-          ? { ...s, status: 'running' as const, startedAt: s.startedAt ?? (event.ts || Date.now()) }
+          ? { ...s, status: 'running' as const, startedAt: s.startedAt ?? startedAt }
           : s,
       );
       return { ...turn, planSteps };
@@ -1405,10 +1461,24 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
       if (!stepId || !status) return turn;
       const mapped: PlanStep['status'] =
         status === 'completed' ? 'done' : status === 'skipped' ? 'skipped' : 'failed';
+      const finishedAt = event.ts || Date.now();
+      const existing = turn.planSteps.find((s) => s.id === stepId);
+      if (!existing) {
+        // Same defense as `workflow:step_start` — bootstrap the step from
+        // the complete event when the plan_update snapshot was missed.
+        const strategy = typeof p.strategy === 'string' ? (p.strategy as string) : undefined;
+        const newStep: PlanStep = {
+          id: stepId,
+          label: stepId,
+          status: mapped,
+          toolCallIds: [],
+          finishedAt,
+          ...(strategy ? { strategy } : {}),
+        };
+        return { ...turn, planSteps: [...turn.planSteps, newStep] };
+      }
       const planSteps = turn.planSteps.map((s) =>
-        s.id === stepId
-          ? { ...s, status: mapped, finishedAt: event.ts || Date.now() }
-          : s,
+        s.id === stepId ? { ...s, status: mapped, finishedAt } : s,
       );
       return { ...turn, planSteps };
     }

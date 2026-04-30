@@ -4,6 +4,7 @@ import { useSessionMessages, useSendMessage } from '@/hooks/use-chat';
 import { useStreamingTurn, useStreamingTurnStore } from '@/hooks/use-streaming-turn';
 import { useRecoverTurnHistory } from '@/hooks/use-recover-turn-history';
 import { useTasks, useRetryTask } from '@/hooks/use-tasks';
+import { useApprovals } from '@/hooks/use-approvals';
 import {
   useArchiveSession,
   useCompactSession,
@@ -28,6 +29,7 @@ import {
 import { HistoricalProcessCard } from '@/components/chat/historical-process-card';
 import { MessageBubble } from '@/components/chat/message-bubble';
 import { StreamingBubble } from '@/components/chat/streaming-bubble';
+import { TaskApprovalCard } from '@/components/chat/task-approval-card';
 import { ActionMenu, type ActionMenuItem } from '@/components/ui/action-menu';
 import { ConfirmDialog } from '@/components/ui/confirm';
 import {
@@ -48,6 +50,12 @@ export default function SessionChat() {
   const hydrateRunningTask = useStreamingTurnStore((s) => s.hydrateRunningTask);
   const dropRecoveredTurn = useStreamingTurnStore((s) => s.dropRecovered);
   const tasksQuery = useTasks();
+  // A6 high-risk task approvals — fetched globally and filtered to this
+  // session below. Without this surface, a task paused at the gate is
+  // invisible inside the chat (the `/approvals` page shows it, the chat
+  // doesn't), so the user has no inline cue that one of their messages
+  // is parked waiting for sign-off.
+  const approvalsQuery = useApprovals();
 
   // Session metadata is fetched separately so the header can render title /
   // description without waiting on /messages. The /messages payload only
@@ -94,6 +102,24 @@ export default function SessionChat() {
     return deduped;
   }, [messages]);
   const pendingClarifications = messagesQuery.data?.session?.pendingClarifications ?? [];
+
+  // Approvals tied to this session — a parent task whose own taskId is
+  // in this session, OR a delegate sub-task whose id is prefixed with one
+  // of the session's parent task ids (`<parent-uuid>-delegate-step<N>`).
+  // The /approvals payload doesn't carry sessionId so we reconstruct the
+  // join client-side via `useTasks`.
+  const sessionApprovals = useMemo(() => {
+    if (!sessionId) return [];
+    const approvals = approvalsQuery.data ?? [];
+    if (approvals.length === 0) return [];
+    const sessionTaskIds = (tasksQuery.data ?? [])
+      .filter((t) => t.sessionId === sessionId)
+      .map((t) => t.taskId);
+    if (sessionTaskIds.length === 0) return [];
+    return approvals.filter((a) =>
+      sessionTaskIds.some((tid) => a.taskId === tid || a.taskId.startsWith(`${tid}-`)),
+    );
+  }, [sessionId, approvalsQuery.data, tasksQuery.data]);
   // Treat the input as busy whenever a turn is still in flight — running OR
   // paused at the workflow approval gate. A fresh mount after navigating
   // back has no mutation state, but the turn in the zustand store still
@@ -186,11 +212,11 @@ export default function SessionChat() {
     (turn?.finalContent.length ?? 0) +
     Object.values(turn?.stepOutputs ?? {}).reduce((acc, v) => acc + v.length, 0);
 
-  // Smooth-scroll on lifecycle transitions (new message, send, status flip)
-  // — these are infrequent and benefit from animation.
+  // Smooth-scroll on lifecycle transitions (new message, send, status flip,
+  // approval-card appears) — these are infrequent and benefit from animation.
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [visibleMessages.length, sending, turn?.toolCalls.length, turn?.status]);
+  }, [visibleMessages.length, sending, turn?.toolCalls.length, turn?.status, sessionApprovals.length]);
 
   // Per-delta auto-scroll during streaming uses `behavior: 'auto'` and is
   // throttled to one scroll per animation frame. The previous code fired a
@@ -343,6 +369,14 @@ export default function SessionChat() {
             nowMs={nowMs}
             onRetry={handleRetry}
           />
+        )}
+
+        {sessionApprovals.length > 0 && (
+          <div className="space-y-2">
+            {sessionApprovals.map((a) => (
+              <TaskApprovalCard key={a.taskId} pending={a} />
+            ))}
+          </div>
         )}
 
         <div ref={bottomRef} />

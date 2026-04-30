@@ -200,6 +200,18 @@ function PlanSurfaceImpl({ turn }: PlanSurfaceProps) {
   }
   const isTurnStreaming = turn.status === 'running';
   const doneCount = turn.planSteps.filter((s) => s.status === 'done').length;
+  // After end (replay/refresh) the user previously saw the last-running
+  // step's output/tools while it streamed. Without preserving SOMETHING
+  // open at end the historical card collapses every row, so the parity
+  // with the live view breaks. Pick the step with the latest finishedAt
+  // as the proxy for "what was streaming when the turn ended".
+  const lastFinishedStepId = !isTurnStreaming
+    ? turn.planSteps.reduce<{ id: string; ts: number } | null>((acc, s) => {
+        const ts = s.finishedAt ?? 0;
+        if (!acc || ts > acc.ts) return { id: s.id, ts };
+        return acc;
+      }, null)?.id
+    : undefined;
 
   return (
     <div className="rounded-md bg-bg/20 px-3 py-2 space-y-1.5">
@@ -217,7 +229,11 @@ function PlanSurfaceImpl({ turn }: PlanSurfaceProps) {
             index={i}
             tools={toolsByStep.get(step.id) ?? []}
             output={turn.stepOutputs[step.id] ?? ''}
-            defaultOpen={step.status === 'running' || step.status === 'failed'}
+            defaultOpen={
+              step.status === 'running' ||
+              step.status === 'failed' ||
+              step.id === lastFinishedStepId
+            }
             isStreaming={isTurnStreaming && step.status === 'running'}
           />
         ))}

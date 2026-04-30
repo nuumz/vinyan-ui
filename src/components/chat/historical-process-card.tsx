@@ -101,8 +101,26 @@ export function HistoricalProcessCard({ taskId }: HistoricalProcessCardProps) {
   // Force "completed" status on the replayed turn so the surfaces don't
   // render running spinners on a finished task. The reducer already sets
   // `status='done'` when it sees `task:complete`, but we belt-and-brace
-  // here in case a task ended without that event being persisted.
-  const finishedTurn = turn.status === 'running' ? { ...turn, status: 'done' as const } : turn;
+  // here in case a task ended without that event being persisted (manifest
+  // drift, tasks that ran before `task:complete` was added to the recorded
+  // allow-list, abort/timeout paths). Same brace for orphan plan steps —
+  // the `task:complete` reducer normally sweeps `pending|running` to `done`,
+  // so without it any unfinished step keeps spinning indefinitely.
+  const isTransitional =
+    turn.status === 'running' ||
+    turn.status === 'awaiting-approval' ||
+    turn.status === 'awaiting-human-input';
+  const finishedTurn = isTransitional
+    ? {
+        ...turn,
+        status: 'done' as const,
+        planSteps: turn.planSteps.map((s) =>
+          s.status === 'pending' || s.status === 'running'
+            ? { ...s, status: 'done' as const, finishedAt: s.finishedAt ?? Date.now() }
+            : s,
+        ),
+      }
+    : turn;
 
   return (
     <CardShell>
