@@ -46,7 +46,16 @@ const COLOR_BY_STATUS: Record<ProcessLogEntry['status'], string> = {
 };
 
 function ProcessTimelineImpl({ turn }: ProcessTimelineProps) {
-  const entries = turn.processLog;
+  // In multi-agent runs the AgentTimelineCard above already shows every
+  // delegate's identity and outcome — duplicating it here as "Routed to
+  // researcher / author / mentor" was the third place the same names
+  // appeared on the historical replay screen. Drop `agent_routed` entries
+  // when the manifest carries a multi-agent group; single-agent or
+  // non-workflow runs keep their lone routing entry as before.
+  const entries =
+    turn.multiAgentSubtasks.length >= 2
+      ? turn.processLog.filter((e) => e.kind !== 'agent_routed')
+      : turn.processLog;
   // Default expanded for short, in-flight runs so the user sees activity
   // without clicking; collapse once the timeline grows or the turn ends to
   // avoid dominating the bubble.
@@ -113,5 +122,6 @@ export const ProcessTimeline = memo(
   ProcessTimelineImpl,
   (prev, next) =>
     prev.turn.processLog === next.turn.processLog &&
-    prev.turn.status === next.turn.status,
+    prev.turn.status === next.turn.status &&
+    prev.turn.multiAgentSubtasks === next.turn.multiAgentSubtasks,
 );

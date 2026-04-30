@@ -54,9 +54,17 @@ interface StepRowProps {
   output: string;
   defaultOpen: boolean;
   isStreaming: boolean;
+  /**
+   * True when AgentTimelineCard already shows this delegate's agent chip
+   * and per-row duration above. We drop the chip + duration from the plan
+   * row to avoid the visible duplication the user flagged on multi-agent
+   * replays. Step number + label + status icon stay so the linear plan
+   * structure is preserved.
+   */
+  suppressDelegateChip?: boolean;
 }
 
-function StepRow({ step, index, tools, output, defaultOpen, isStreaming }: StepRowProps) {
+function StepRow({ step, index, tools, output, defaultOpen, isStreaming, suppressDelegateChip }: StepRowProps) {
   const [open, setOpen] = useState(defaultOpen);
   const { Icon, tone, spin, strike } = glyphFor(step.status);
   const hasTools = tools.length > 0;
@@ -110,11 +118,12 @@ function StepRow({ step, index, tools, output, defaultOpen, isStreaming }: StepR
         >
           {step.label}
         </span>
-        {step.agentId && (
+        {step.agentId && !suppressDelegateChip && (
           // Per-agent identity chip — surfaced from the planner's
           // delegate-sub-agent assignment. Without this the user cannot
           // tell which persona is answering each step in a multi-agent
           // workflow ("Researcher / Author / Mentor" was invisible).
+          // Suppressed when AgentTimelineCard renders the same chip above.
           <span
             className="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-accent/10 text-accent border border-accent/25 text-[10px] font-medium"
             title={`Sub-agent: ${step.agentId}`}
@@ -122,10 +131,10 @@ function StepRow({ step, index, tools, output, defaultOpen, isStreaming }: StepR
             {step.agentId}
           </span>
         )}
-        {duration && (
+        {duration && !suppressDelegateChip && (
           <span className="shrink-0 text-[10px] text-text-dim tabular-nums">{duration}</span>
         )}
-        {!duration && hasTools && (
+        {!duration && hasTools && !suppressDelegateChip && (
           <span className="shrink-0 text-[10px] text-text-dim tabular-nums">
             {tools.length} tool{tools.length === 1 ? '' : 's'}
           </span>
@@ -235,6 +244,16 @@ function PlanSurfaceImpl({ turn }: PlanSurfaceProps) {
               step.id === lastFinishedStepId
             }
             isStreaming={isTurnStreaming && step.status === 'running'}
+            // When AgentTimelineCard already renders this delegate's agent
+            // chip + duration above, suppress the duplicate here. Heuristic
+            // is "this turn has multi-agent subtask records AND this step
+            // is one of them" — a single delegate (no AgentTimelineCard)
+            // keeps the chip so the user can still see the agent.
+            suppressDelegateChip={
+              step.strategy === 'delegate-sub-agent' &&
+              turn.multiAgentSubtasks.some((s) => s.stepId === step.id) &&
+              turn.multiAgentSubtasks.length >= 2
+            }
           />
         ))}
       </ol>
@@ -273,5 +292,6 @@ export const PlanSurface = memo(
     prev.turn.planSteps === next.turn.planSteps &&
     prev.turn.toolCalls === next.turn.toolCalls &&
     prev.turn.stepOutputs === next.turn.stepOutputs &&
-    prev.turn.status === next.turn.status,
+    prev.turn.status === next.turn.status &&
+    prev.turn.multiAgentSubtasks === next.turn.multiAgentSubtasks,
 );

@@ -8,6 +8,13 @@ interface InterruptBannerProps {
   turn: StreamingTurn;
   sessionId: string;
   onRetry?: () => void;
+  /**
+   * Historical replay mode. The banner still composes the four sub-cards
+   * but hides their action affordances (approve/reject/answer/retry). Used
+   * by the historical process card so a past task that paused on a gate
+   * still surfaces the gate as a recorded snapshot.
+   */
+  readOnly?: boolean;
 }
 
 /**
@@ -24,13 +31,36 @@ interface InterruptBannerProps {
  * mid-stream — that loudness is the point. The receiving page should layer
  * a 200ms slide-in animation in CSS to soften the layout shift.
  */
-export function InterruptBanner({ turn, sessionId, onRetry }: InterruptBannerProps) {
-  if (turn.pendingApproval && turn.status === 'awaiting-approval') {
-    return <WorkflowApprovalCard sessionId={sessionId} pending={turn.pendingApproval} />;
+export function InterruptBanner({
+  turn,
+  sessionId,
+  onRetry,
+  readOnly = false,
+}: InterruptBannerProps) {
+  // In live mode the gates are matched on `turn.status` so they only fire
+  // while the workflow is actually paused. In historical mode the
+  // recording may have stopped while a gate was open AND the reducer's
+  // status sweep on terminal events never ran — so we render whichever
+  // pending* surface is set, regardless of status, as a read-only
+  // snapshot of the gate that was active.
+  if (turn.pendingApproval && (readOnly || turn.status === 'awaiting-approval')) {
+    return (
+      <WorkflowApprovalCard
+        sessionId={sessionId}
+        pending={turn.pendingApproval}
+        readOnly={readOnly}
+      />
+    );
   }
 
-  if (turn.pendingHumanInput && turn.status === 'awaiting-human-input') {
-    return <WorkflowHumanInputCard sessionId={sessionId} pending={turn.pendingHumanInput} />;
+  if (turn.pendingHumanInput && (readOnly || turn.status === 'awaiting-human-input')) {
+    return (
+      <WorkflowHumanInputCard
+        sessionId={sessionId}
+        pending={turn.pendingHumanInput}
+        readOnly={readOnly}
+      />
+    );
   }
 
   if (turn.status === 'input-required' && turn.clarifications.length > 0) {
@@ -47,13 +77,15 @@ export function InterruptBanner({ turn, sessionId, onRetry }: InterruptBannerPro
             <li key={`${idx}-${q}`}>{q}</li>
           ))}
         </ul>
-        <div className="text-xs text-text-dim">Type your answer below to continue.</div>
+        {!readOnly && (
+          <div className="text-xs text-text-dim">Type your answer below to continue.</div>
+        )}
       </div>
     );
   }
 
   if (turn.status === 'error') {
-    return <TurnErrorPanel reason={turn.error} onRetry={onRetry} />;
+    return <TurnErrorPanel reason={turn.error} onRetry={onRetry} readOnly={readOnly} />;
   }
 
   return null;

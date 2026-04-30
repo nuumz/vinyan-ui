@@ -14,6 +14,16 @@ interface WorkflowApprovalCardProps {
    * existing call sites that may want to force a window in test setups.
    */
   timeoutMs?: number;
+  /**
+   * Historical replay mode. Hides the approve/reject buttons and the
+   * countdown bar; the card becomes a "approval was requested" record
+   * showing the plan that was on the table when the gate fired. The
+   * resolution itself is rendered separately by the replay path because
+   * `pendingApproval` is cleared by the reducer when the gate resolves —
+   * so seeing this card in historical mode means the recording stopped
+   * mid-gate.
+   */
+  readOnly?: boolean;
 }
 
 /**
@@ -44,6 +54,7 @@ export function WorkflowApprovalCard({
   sessionId,
   pending,
   timeoutMs: timeoutOverride,
+  readOnly = false,
 }: WorkflowApprovalCardProps) {
   const resolve = useResolveWorkflowApproval();
   const [now, setNow] = useState(() => Date.now());
@@ -58,9 +69,10 @@ export function WorkflowApprovalCard({
     timeoutOverride ?? pending.timeoutMs ?? DEFAULT_AGENT_DISCRETION_TIMEOUT_MS;
 
   useEffect(() => {
+    if (readOnly) return; // no live ticking in historical mode
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
-  }, []);
+  }, [readOnly]);
 
   const elapsed = Math.max(0, now - pending.at);
   const remaining = Math.max(0, effectiveTimeoutMs - elapsed);
@@ -98,10 +110,18 @@ export function WorkflowApprovalCard({
         title: 'text-yellow',
         bar: { lit: 'bg-yellow/60', dim: 'bg-yellow/10' },
       };
-  const titleText = isHumanRequired ? 'Human decision required' : 'Review workflow plan';
-  const subtitle = isHumanRequired
-    ? 'Vinyan cannot continue without your decision.'
-    : `Vinyan will auto-decide after ${formatRemaining(effectiveTimeoutMs)} if you do not respond.`;
+  const titleText = readOnly
+    ? isHumanRequired
+      ? 'Human decision was required'
+      : 'Approval was requested'
+    : isHumanRequired
+      ? 'Human decision required'
+      : 'Review workflow plan';
+  const subtitle = readOnly
+    ? 'Recording stopped before the gate resolved.'
+    : isHumanRequired
+      ? 'Vinyan cannot continue without your decision.'
+      : `Vinyan will auto-decide after ${formatRemaining(effectiveTimeoutMs)} if you do not respond.`;
   // Human-required: buttons stay enabled until the backend tears the card
   // down. Agent-discretion: lock buttons once the timer expires (Vinyan
   // is auto-deciding — the user's button press would race the auto verdict).
@@ -152,8 +172,10 @@ export function WorkflowApprovalCard({
       )}
 
       {/* Countdown bar — agent-discretion only. Human-required has no
-          deadline-driven progress; showing one would imply an auto verdict. */}
-      {!isHumanRequired && (
+          deadline-driven progress; showing one would imply an auto verdict.
+          Historical replay never shows a countdown — there is nothing to
+          count down toward. */}
+      {!isHumanRequired && !readOnly && (
         <div
           className={cn('h-1 w-full rounded overflow-hidden', accent.bar.dim)}
           aria-hidden="true"
@@ -168,37 +190,41 @@ export function WorkflowApprovalCard({
         </div>
       )}
 
-      <div className="flex items-center gap-2 flex-wrap">
-        <button
-          type="button"
-          onClick={onApprove}
-          disabled={buttonsDisabled}
-          className={cn(
-            'inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded transition-colors',
-            'bg-green/15 hover:bg-green/25 border border-green/40 text-green',
-            buttonsDisabled && 'opacity-50 cursor-not-allowed hover:bg-green/15',
+      {!readOnly ? (
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            type="button"
+            onClick={onApprove}
+            disabled={buttonsDisabled}
+            className={cn(
+              'inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded transition-colors',
+              'bg-green/15 hover:bg-green/25 border border-green/40 text-green',
+              buttonsDisabled && 'opacity-50 cursor-not-allowed hover:bg-green/15',
+            )}
+          >
+            <Check size={11} /> Approve & run
+          </button>
+          <button
+            type="button"
+            onClick={onReject}
+            disabled={buttonsDisabled}
+            className={cn(
+              'inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded transition-colors',
+              'bg-red/10 hover:bg-red/20 border border-red/40 text-red',
+              buttonsDisabled && 'opacity-50 cursor-not-allowed hover:bg-red/10',
+            )}
+          >
+            <X size={11} /> Reject
+          </button>
+          {!isHumanRequired && remaining <= 0 && (
+            <span className="text-[11px] text-yellow">
+              Window expired — Vinyan is deciding…
+            </span>
           )}
-        >
-          <Check size={11} /> Approve & run
-        </button>
-        <button
-          type="button"
-          onClick={onReject}
-          disabled={buttonsDisabled}
-          className={cn(
-            'inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded transition-colors',
-            'bg-red/10 hover:bg-red/20 border border-red/40 text-red',
-            buttonsDisabled && 'opacity-50 cursor-not-allowed hover:bg-red/10',
-          )}
-        >
-          <X size={11} /> Reject
-        </button>
-        {!isHumanRequired && remaining <= 0 && (
-          <span className="text-[11px] text-yellow">
-            Window expired — Vinyan is deciding…
-          </span>
-        )}
-      </div>
+        </div>
+      ) : (
+        <div className="text-[11px] text-text-dim italic">Read-only — no decision recorded.</div>
+      )}
     </div>
   );
 }

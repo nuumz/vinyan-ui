@@ -21,7 +21,7 @@ import {
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { PlanStep, ToolCall } from '@/hooks/use-streaming-turn';
+import type { MultiAgentSubtaskView, PlanStep, ToolCall } from '@/hooks/use-streaming-turn';
 import { classifyTool, toolBadgeLabel, toolPrimaryPreview } from '@/lib/summarize-tools';
 import type { ToolCategory } from '@/lib/summarize-tools';
 import { Markdown } from './markdown';
@@ -76,6 +76,22 @@ export interface AgentTimelineCardProps {
    * turn's overall timer in TurnHeader.
    */
   nowMs?: number;
+  /**
+   * Multi-agent subtask manifest (from the parent turn). Provides the
+   * deterministic fallback label ("Agent N") and the structured failure
+   * shape (errorKind + errorMessage) so failed delegate rows show useful
+   * detail instead of "[no output captured — agent failed]". When
+   * omitted (legacy / non-workflow turns) the card falls back to
+   * `step.agentId ?? 'agent?'` for back-compat.
+   */
+  subtasks?: MultiAgentSubtaskView[];
+  /**
+   * Show the "Expand all agents" / "Collapse all agents" header control.
+   * Defaults to false. The historical card flips this on so users can
+   * audit every delegate's manifest in one click; the live bubble keeps
+   * it off because the in-flight rows still use per-row hover discovery.
+   */
+  showExpandAll?: boolean;
 }
 
 interface StatusMeta {
@@ -282,10 +298,78 @@ interface DelegateRowProps {
   defaultOpen: boolean;
   /** Wall-clock now (ms). Drives the live elapsed counter while WORKING. */
   nowMs: number;
+  /** Manifest record for this step, when the stage manifest is wired. */
+  subtask?: MultiAgentSubtaskView;
+  /**
+   * Force the row open / closed from outside. When set, the row's local
+   * disclosure state is overridden — used by the "Expand all agents" /
+   * "Collapse all agents" header in historical mode. Live mode passes
+   * undefined and the row owns its own state.
+   */
+  forceOpen?: boolean;
+  /**
+   * Show the manifest detail panel (objective / prompt / expectedOutput /
+   * inputRefs / capabilityTags / agentRole) inside the expanded drawer.
+   * Default true so live mode also gets the detail; historical mode keeps
+   * it on as well. Disabled only by callers that explicitly want the
+   * compact pre-manifest layout.
+   */
+  showManifestDetail?: boolean;
 }
 
-function DelegateRow({ step, events, isLive, defaultOpen, nowMs }: DelegateRowProps) {
+/**
+ * Resolve the agent label for a delegate row. Resolution order matches the
+ * stage manifest's intent:
+ *   1. live `step.agentId` (set by `workflow:delegate_dispatched`)
+ *   2. manifest agentName / agentId (planner-pinned + registry-resolved)
+ *   3. deterministic fallback `Agent N` from the manifest
+ *   4. legacy `'agent?'` only when nothing above is available
+ */
+function resolveAgentLabel(step: PlanStep, subtask?: MultiAgentSubtaskView): string {
+  return (
+    step.agentId ??
+    subtask?.agentName ??
+    subtask?.agentId ??
+    subtask?.fallbackLabel ??
+    'agent?'
+  );
+}
+
+function describeErrorKind(kind: MultiAgentSubtaskView['errorKind']): string {
+  switch (kind) {
+    case 'provider_quota':
+      return 'Provider quota exhausted';
+    case 'timeout':
+      return 'Timed out';
+    case 'empty_response':
+      return 'Empty response';
+    case 'parse_error':
+      return 'Output failed to parse';
+    case 'contract_violation':
+      return 'Contract violation';
+    case 'dependency_failed':
+      return 'Skipped: dependency failed';
+    case 'subtask_failed':
+      return 'Sub-agent failed';
+    case 'unknown':
+    case undefined:
+    default:
+      return 'Failed';
+  }
+}
+
+function DelegateRow({
+  step,
+  events,
+  isLive,
+  defaultOpen,
+  nowMs,
+  subtask,
+  forceOpen,
+  showManifestDetail = true,
+}: DelegateRowProps) {
   const [open, setOpen] = useState(defaultOpen);
+  const effectiveOpen = forceOpen ?? open;
   const meta = statusMeta(step);
   const Icon = meta.Icon;
 
@@ -305,7 +389,19 @@ function DelegateRow({ step, events, isLive, defaultOpen, nowMs }: DelegateRowPr
 
   const hasFinalOutput = !!step.outputPreview && step.outputPreview.trim().length > 0;
   const hasEvents = events.length > 0;
-  const expandable = hasEvents || hasFinalOutput || step.status === 'failed';
+  const hasManifestDetail =
+    showManifestDetail &&
+    !!subtask &&
+    !!(
+      subtask.objective ||
+      subtask.prompt ||
+      subtask.expectedOutput ||
+      subtask.agentRole ||
+      (subtask.capabilityTags && subtask.capabilityTags.length > 0) ||
+      subtask.inputRefs.length > 0
+    );
+  const expandable =
+    hasEvents || hasFinalOutput || step.status === 'failed' || hasManifestDetail;
 
   // Latest in-flight event surfaces in the collapsed strip while the agent
   // is working — replaces the streamed-text tail so the user sees "Read
@@ -333,15 +429,15 @@ function DelegateRow({ step, events, isLive, defaultOpen, nowMs }: DelegateRowPr
           'flex w-full items-center gap-2.5 px-3 py-1.5 text-left',
           expandable ? 'cursor-pointer hover:bg-bg/30' : 'cursor-default',
         )}
-        disabled={!expandable}
-        aria-expanded={expandable ? open : undefined}
+        disabled={!expandable || forceOpen !== undefined}
+        aria-expanded={expandable ? effectiveOpen : undefined}
       >
         {expandable ? (
           <ChevronRight
             size={11}
             className={cn(
               'shrink-0 text-text-dim transition-transform',
-              open && 'rotate-90',
+              effectiveOpen && 'rotate-90',
             )}
           />
         ) : (
@@ -353,10 +449,10 @@ function DelegateRow({ step, events, isLive, defaultOpen, nowMs }: DelegateRowPr
             className={cn('text-text-dim/70', meta.spin && 'text-blue animate-spin')}
           />
           <span className="font-mono text-[10.5px] px-1.5 py-0.5 rounded border border-border/60 bg-bg/40 text-text/90 min-w-[5.25rem] text-center">
-            {step.agentId ?? 'agent?'}
+            {resolveAgentLabel(step, subtask)}
           </span>
         </span>
-        {!open && inFlight ? (
+        {!effectiveOpen && inFlight ? (
           <span className="flex-1 text-[11px] text-text-dim/85 line-clamp-1 min-w-0">
             <span className="text-text-dim/70">{humanizeTool(inFlight).verb}</span>
             {humanizeTool(inFlight).subject && (
@@ -384,11 +480,12 @@ function DelegateRow({ step, events, isLive, defaultOpen, nowMs }: DelegateRowPr
           </span>
         )}
       </button>
-      {open && expandable && (
+      {effectiveOpen && expandable && (
         <div className="ml-7 mb-2 mr-3 border-l border-border/40 pl-3 space-y-1.5 text-xs">
           {step.subTaskId && (
             <div className="text-[10px] font-mono text-text-dim/70">sub-task: {step.subTaskId}</div>
           )}
+          {hasManifestDetail && subtask && <SubtaskManifestPanel subtask={subtask} />}
           {hasEvents ? (
             <ol className="space-y-0">
               {events.map((tool) => (
@@ -400,8 +497,20 @@ function DelegateRow({ step, events, isLive, defaultOpen, nowMs }: DelegateRowPr
           ) : null}
           {hasFinalOutput && <FinalAnswerDisclosure text={step.outputPreview ?? ''} />}
           {step.status === 'failed' && !hasFinalOutput && (
-            <div className="rounded border border-red/25 bg-red/5 p-2 text-red/90">
-              [no output captured — agent {meta.label}]
+            <div className="rounded border border-red/25 bg-red/5 p-2 text-red/90 space-y-1">
+              <div className="text-[10.5px] uppercase tracking-wide font-medium">
+                {describeErrorKind(subtask?.errorKind)}
+              </div>
+              {subtask?.errorMessage ? (
+                <div className="text-[11px] font-mono break-words">{subtask.errorMessage}</div>
+              ) : (
+                <div className="text-[11px] italic">
+                  Agent {resolveAgentLabel(step, subtask)} reported failure with no captured output.
+                </div>
+              )}
+              {subtask?.partialOutputAvailable && step.outputPreview && (
+                <FinalAnswerDisclosure text={step.outputPreview} />
+              )}
             </div>
           )}
           {!hasEvents && !hasFinalOutput && step.status !== 'running' && step.status !== 'failed' && (
@@ -413,7 +522,66 @@ function DelegateRow({ step, events, isLive, defaultOpen, nowMs }: DelegateRowPr
   );
 }
 
-function CompareDrawer({ rows }: { rows: PlanStep[] }) {
+/**
+ * Manifest detail panel inside the expanded delegate row. Shows the
+ * sub-agent's planner-given objective, prompt, expectedOutput, input
+ * references, and (when the agent registry resolved them) role +
+ * capability tags. Used by both live and historical mode to give
+ * the user a "what was this agent actually asked to do" view that
+ * predates any tool activity.
+ */
+function SubtaskManifestPanel({ subtask }: { subtask: MultiAgentSubtaskView }) {
+  const objective = subtask.objective?.trim();
+  const prompt = subtask.prompt?.trim();
+  // The objective often duplicates the prompt verbatim (the planner builds
+  // both from `step.description`). Skip the prompt rendering in that case
+  // to keep the panel compact.
+  const showPrompt = !!prompt && prompt !== objective;
+  return (
+    <dl className="rounded border border-border/30 bg-bg/15 px-2.5 py-1.5 space-y-1 text-[11px]">
+      {objective && (
+        <ManifestRow label="Objective" value={objective} />
+      )}
+      {showPrompt && <ManifestRow label="Prompt" value={prompt!} />}
+      {subtask.expectedOutput && (
+        <ManifestRow label="Expected" value={subtask.expectedOutput} />
+      )}
+      {subtask.inputRefs.length > 0 && (
+        <ManifestRow label="Inputs" value={subtask.inputRefs.join(', ')} mono />
+      )}
+      {subtask.agentRole && <ManifestRow label="Role" value={subtask.agentRole} />}
+      {subtask.capabilityTags && subtask.capabilityTags.length > 0 && (
+        <ManifestRow label="Capabilities" value={subtask.capabilityTags.join(', ')} mono />
+      )}
+    </dl>
+  );
+}
+
+function ManifestRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="flex items-start gap-2">
+      <dt className="shrink-0 w-20 text-[10px] uppercase tracking-wide text-text-dim/80">
+        {label}
+      </dt>
+      <dd
+        className={cn(
+          'flex-1 min-w-0 wrap-break-word text-text/90',
+          mono && 'font-mono text-[10.5px]',
+        )}
+      >
+        {value}
+      </dd>
+    </div>
+  );
+}
+
+function CompareDrawer({
+  rows,
+  subtasksByStep,
+}: {
+  rows: PlanStep[];
+  subtasksByStep: Map<string, MultiAgentSubtaskView>;
+}) {
   const cols = rows.filter((r) => r.outputPreview && r.outputPreview.trim().length > 0);
   if (cols.length < 2) return null;
   return (
@@ -433,7 +601,7 @@ function CompareDrawer({ rows }: { rows: PlanStep[] }) {
             <div className="flex items-center gap-1.5 pb-1 border-b border-border/30">
               <Bot size={10} className="text-text-dim/70" />
               <span className="font-mono text-[10.5px] px-1.5 py-0.5 rounded border border-border/60 bg-bg/40">
-                {row.agentId ?? 'agent?'}
+                {resolveAgentLabel(row, subtasksByStep.get(row.id))}
               </span>
               {row.startedAt && row.finishedAt && (
                 <span className="ml-auto text-[10px] text-text-dim/70 font-mono tabular-nums">
@@ -476,11 +644,23 @@ function AgentTimelineCardImpl({
   toolCalls = [],
   isLive = false,
   nowMs = Date.now(),
+  subtasks = [],
+  showExpandAll = false,
 }: AgentTimelineCardProps) {
+  const [forceAllOpen, setForceAllOpen] = useState<boolean | undefined>(undefined);
   const delegateRows = useMemo(
     () => steps.filter((s) => s.strategy === 'delegate-sub-agent'),
     [steps],
   );
+  // stepId → subtask record from the durable manifest. Powers the
+  // deterministic fallback label ("Agent N") and the structured failure
+  // shape (errorKind/errorMessage) so the row never collapses to "agent?"
+  // or "[no output captured — agent failed]" when the manifest is wired.
+  const subtasksByStep = useMemo(() => {
+    const m = new Map<string, MultiAgentSubtaskView>();
+    for (const s of subtasks) m.set(s.stepId, s);
+    return m;
+  }, [subtasks]);
 
   // Group tool calls by their resolved planStepId so each delegate row
   // gets its own compact history. Reducer's `resolveStepId` pins tool
@@ -610,6 +790,22 @@ function AgentTimelineCardImpl({
         </div>
       )}
 
+      {showExpandAll && delegateRows.length > 1 && (
+        <div className="flex justify-end px-3 py-1 border-b border-border/20 bg-bg/10">
+          <button
+            type="button"
+            onClick={() => setForceAllOpen((v) => (v === true ? false : true))}
+            className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide font-medium text-accent hover:text-accent/80"
+          >
+            <ChevronRight
+              size={9}
+              className={cn('transition-transform', forceAllOpen === true && 'rotate-90')}
+            />
+            {forceAllOpen === true ? 'Collapse all agents' : 'Expand all agents'}
+          </button>
+        </div>
+      )}
+
       <ul>
         {delegateRows.map((row) => (
           <DelegateRow
@@ -619,6 +815,8 @@ function AgentTimelineCardImpl({
             isLive={isLive}
             defaultOpen={row.status === 'failed'}
             nowMs={nowMs}
+            subtask={subtasksByStep.get(row.id)}
+            forceOpen={forceAllOpen}
           />
         ))}
       </ul>
@@ -644,7 +842,7 @@ function AgentTimelineCardImpl({
               {showCompare ? 'Hide compare' : 'Compare side-by-side'}
             </button>
           </div>
-          {showCompare && <CompareDrawer rows={completedRowsForCompare} />}
+          {showCompare && <CompareDrawer rows={completedRowsForCompare} subtasksByStep={subtasksByStep} />}
         </>
       )}
     </div>

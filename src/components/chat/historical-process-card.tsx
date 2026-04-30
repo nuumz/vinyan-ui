@@ -4,20 +4,27 @@
  *
  * Lazy-loads the persisted bus event log for `taskId` via `useTaskEvents`,
  * replays it through the same `reduceTurn` reducer the live stream uses,
- * and reuses the existing surface components (`PlanSurface`,
- * `ProcessTimeline`, `DiagnosticsDrawer`) to render the result. No
- * duplicate rendering paths.
+ * and renders the result through `<TurnProcessSurfaces mode="historical">`
+ * so live and replay views stay in lock-step.
+ *
+ * Replay completeness — the previous version forced every running /
+ * awaiting-* turn into `done` and swept pending plan steps to done as a
+ * "belt-and-brace". That silently lied for tasks whose terminal event
+ * never landed in the persisted log (recorder dropouts, manifest drift,
+ * tasks that ran before a recorded event was added). We now classify the
+ * log via `replayCompleteness` and render an honest banner instead.
  *
  * Returns null when the backend reports no recorder is wired
- * (`unsupported`) so the message bubble degrades gracefully to "no
- * historical process available".
+ * (`unsupported`) so the message bubble degrades gracefully.
  */
-import { AlertTriangle, Inbox, Loader2 } from 'lucide-react';
-import { AgentTimelineCard } from './agent-timeline-card';
-import { DiagnosticsDrawer } from './diagnostics-drawer';
-import { PlanSurface } from './plan-surface';
-import { ProcessTimeline } from './process-timeline';
+import { useMemo } from 'react';
 import { useTaskEvents } from '@/hooks/use-task-events';
+import {
+  normalizeReplayedTurnForDisplay,
+  replayCompleteness,
+} from '@/lib/replay-completeness';
+import { ReplayCompletenessBanner } from './replay-completeness-banner';
+import { TurnProcessSurfaces } from './turn-process-surfaces';
 
 interface HistoricalProcessCardProps {
   taskId: string;
@@ -37,102 +44,61 @@ function CardShell({ children }: { children: React.ReactNode }) {
   );
 }
 
-function StateRow({
-  icon,
-  tone,
-  text,
-  spin,
-}: {
-  icon: React.ReactNode;
-  tone: 'dim' | 'red';
-  text: string;
-  spin?: boolean;
-}) {
-  return (
-    <div
-      className={`flex items-center gap-2 text-xs ${tone === 'red' ? 'text-red' : 'text-text-dim'}`}
-    >
-      <span className={spin ? 'animate-spin' : undefined}>{icon}</span>
-      <span className={tone === 'dim' ? 'italic' : undefined}>{text}</span>
-    </div>
-  );
-}
-
 export function HistoricalProcessCard({ taskId }: HistoricalProcessCardProps) {
-  const { turn, isLoading, error, unsupported } = useTaskEvents(taskId, { enabled: true });
+  const { turn, events, isLoading, error, unsupported } = useTaskEvents(taskId, { enabled: true });
 
-  if (unsupported) {
-    return (
-      <CardShell>
-        <StateRow
-          icon={<Inbox size={12} />}
-          tone="dim"
-          text="Process history unavailable (server has no event log wired)."
-        />
-      </CardShell>
-    );
-  }
+  // Classify the persisted log honestly. Done first so loading / error /
+  // unsupported / empty states fall through to the banner with the matching
+  // tone instead of collapsing to a single "no events" string.
+  const completeness = useMemo(
+    () =>
+      replayCompleteness(events ?? [], {
+        unsupported,
+        error: !!error && !unsupported,
+      }),
+    [events, unsupported, error],
+  );
+
   if (isLoading) {
     return (
       <CardShell>
-        <StateRow icon={<Loader2 size={12} />} tone="dim" text="Loading process…" spin />
-      </CardShell>
-    );
-  }
-  if (error) {
-    return (
-      <CardShell>
-        <StateRow
-          icon={<AlertTriangle size={12} />}
-          tone="red"
-          text={`Failed to load process history: ${String((error as Error)?.message ?? error)}`}
-        />
-      </CardShell>
-    );
-  }
-  if (!turn) {
-    return (
-      <CardShell>
-        <StateRow icon={<Inbox size={12} />} tone="dim" text="No persisted events for this task." />
+        <div className="text-[11px] text-text-dim italic">Loading process…</div>
       </CardShell>
     );
   }
 
-  // Force "completed" status on the replayed turn so the surfaces don't
-  // render running spinners on a finished task. The reducer already sets
-  // `status='done'` when it sees `task:complete`, but we belt-and-brace
-  // here in case a task ended without that event being persisted (manifest
-  // drift, tasks that ran before `task:complete` was added to the recorded
-  // allow-list, abort/timeout paths). Same brace for orphan plan steps —
-  // the `task:complete` reducer normally sweeps `pending|running` to `done`,
-  // so without it any unfinished step keeps spinning indefinitely.
-  const isTransitional =
-    turn.status === 'running' ||
-    turn.status === 'awaiting-approval' ||
-    turn.status === 'awaiting-human-input';
-  const finishedTurn = isTransitional
-    ? {
-        ...turn,
-        status: 'done' as const,
-        planSteps: turn.planSteps.map((s) =>
-          s.status === 'pending' || s.status === 'running'
-            ? { ...s, status: 'done' as const, finishedAt: s.finishedAt ?? Date.now() }
-            : s,
-        ),
-      }
-    : turn;
+  // Non-rendering states: surface the banner, no surfaces.
+  if (!turn || completeness.kind === 'empty' || completeness.kind === 'unsupported' || completeness.kind === 'error') {
+    return (
+      <CardShell>
+        <ReplayCompletenessBanner
+          completeness={completeness}
+          taskId={taskId}
+          detail={error ? String((error as Error)?.message ?? error) : undefined}
+        />
+      </CardShell>
+    );
+  }
+
+  const displayTurn = normalizeReplayedTurnForDisplay(turn, completeness);
+
+  // Pin "now" to the last event time so the header's elapsed counter shows
+  // the wall-clock the task actually ran for, not a count from epoch to
+  // present-day. The current-stage spinner / live-pulse classes are gated
+  // by `mode='historical'` (readOnly) so no element ticks against this.
+  const nowMs = completeness.lastTs ?? Date.now();
 
   return (
     <CardShell>
-      <div className="space-y-2">
-        <AgentTimelineCard
-          steps={finishedTurn.planSteps}
-          toolCalls={finishedTurn.toolCalls}
-          isLive={false}
+      <div className="flex flex-col gap-3">
+        <ReplayCompletenessBanner completeness={completeness} taskId={taskId} />
+        <TurnProcessSurfaces
+          turn={displayTurn}
+          mode="historical"
+          sessionId={displayTurn.taskId}
+          nowMs={nowMs}
+          defaultExpandStage
         />
-        <PlanSurface turn={finishedTurn} />
-        <ProcessTimeline turn={finishedTurn} />
-        <DiagnosticsDrawer turn={finishedTurn} />
       </div>
     </CardShell>
   );

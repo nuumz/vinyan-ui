@@ -10,6 +10,13 @@ import { cn } from '@/lib/utils';
 interface WorkflowHumanInputCardProps {
   sessionId: string;
   pending: PendingHumanInput;
+  /**
+   * Historical replay mode. Renders the recorded question read-only with no
+   * textarea / suggestion / send affordances. Used when the persisted log
+   * stopped on `workflow:human_input_needed` without a matching
+   * `workflow:human_input_provided`.
+   */
+  readOnly?: boolean;
 }
 
 /**
@@ -35,6 +42,32 @@ interface WorkflowHumanInputCardProps {
  * `workflow:human_input_provided` SSE event the reducer listens for.
  */
 export function WorkflowHumanInputCard({
+  sessionId,
+  pending,
+  readOnly = false,
+}: WorkflowHumanInputCardProps) {
+  if (readOnly) {
+    return (
+      <div className="bg-blue/5 border border-blue/30 rounded-md p-3 space-y-2">
+        <div className="flex items-start gap-2">
+          <MessageSquare size={14} className="text-blue shrink-0 mt-0.5" />
+          <div className="min-w-0 flex-1">
+            <div className="text-sm text-blue font-medium">Workflow asked the user a question</div>
+            {pending.question && (
+              <div className="text-xs text-text mt-1 wrap-break-word">{pending.question}</div>
+            )}
+          </div>
+        </div>
+        <div className="text-[11px] text-text-dim italic">
+          Read-only — no answer was recorded before the log ended.
+        </div>
+      </div>
+    );
+  }
+  return <WorkflowHumanInputCardLive sessionId={sessionId} pending={pending} />;
+}
+
+function WorkflowHumanInputCardLive({
   sessionId,
   pending,
 }: WorkflowHumanInputCardProps) {

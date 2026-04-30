@@ -7,6 +7,12 @@ interface TurnErrorPanelProps {
   /** Error string surfaced from the streaming reducer (`turn.error`). */
   reason?: string;
   onRetry?: () => void;
+  /**
+   * Historical replay mode. Hides the retry button — past failed turns do
+   * not retry from the persisted record. The error message itself stays
+   * visible so the user can see what went wrong.
+   */
+  readOnly?: boolean;
 }
 
 /**
@@ -14,10 +20,11 @@ interface TurnErrorPanelProps {
  * because it lives inside an already-rendered bubble — narrower, tighter
  * spacing, prominent retry CTA tinted to match the bubble's red accent.
  */
-export function TurnErrorPanel({ reason, onRetry }: TurnErrorPanelProps) {
+export function TurnErrorPanel({ reason, onRetry, readOnly = false }: TurnErrorPanelProps) {
   const [showDetail, setShowDetail] = useState(false);
   const formatted = formatError(reason ?? new Error('Task failed'));
   const hasDetail = !!formatted.detail && formatted.detail !== formatted.title;
+  const showRetry = !readOnly && onRetry && formatted.retriable !== false;
 
   return (
     <div className="bg-red/5 border border-red/30 rounded-md p-3 space-y-2">
@@ -28,7 +35,7 @@ export function TurnErrorPanel({ reason, onRetry }: TurnErrorPanelProps) {
         )}
       </div>
       <div className="flex items-center gap-2 flex-wrap">
-        {onRetry && formatted.retriable !== false && (
+        {showRetry && (
           <button
             type="button"
             onClick={onRetry}

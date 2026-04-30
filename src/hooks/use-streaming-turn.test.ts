@@ -1330,3 +1330,209 @@ describe('reduceTurn — sub-task tool attribution (compact step history)', () =
     expect(tool.planStepId).toBe('lr');
   });
 });
+
+describe('reduceTurn — stage manifest', () => {
+  test('workflow:decision_recorded captures the post-prompt decision', () => {
+    const t = reduceTurn(
+      reduceTurn(emptyTurn(), ev('task:start', { input: { id: 'task-1' } })),
+      ev('workflow:decision_recorded', {
+        taskId: 'task-1',
+        sessionId: 'sess-1',
+        decision: {
+          taskId: 'task-1',
+          sessionId: 'sess-1',
+          userPrompt: 'แบ่ง agent 3 ตัว แข่งกัน',
+          decisionKind: 'multi-agent',
+          decisionRationale: 'planner picked multi-agent',
+          createdAt: 1_700_000_000,
+          routingLevel: 2,
+        },
+      }),
+    );
+    expect(t.decisionStage?.decisionKind).toBe('multi-agent');
+    expect(t.decisionStage?.userPrompt).toContain('agent 3');
+    expect(t.decisionStage?.routingLevel).toBe(2);
+  });
+
+  test('workflow:todo_created populates todoList; todo_updated flips status + failure reason', () => {
+    const seeded = reduceTurn(emptyTurn(), ev('task:start', { input: { id: 'task-1' } }));
+    const created = reduceTurn(
+      seeded,
+      ev('workflow:todo_created', {
+        taskId: 'task-1',
+        groupMode: 'competition',
+        todoList: [
+          {
+            id: 'todo-step1',
+            title: 'Pick a topic',
+            ownerType: 'system',
+            status: 'pending',
+            dependsOn: [],
+            sourceStepId: 'step1',
+          },
+          {
+            id: 'todo-step2',
+            title: 'Answer',
+            ownerType: 'agent',
+            ownerId: 'developer',
+            status: 'pending',
+            dependsOn: ['step1'],
+            sourceStepId: 'step2',
+          },
+        ],
+      }),
+    );
+    expect(created.todoList).toHaveLength(2);
+    expect(created.multiAgentGroupMode).toBe('competition');
+
+    const updated = reduceTurn(
+      created,
+      ev('workflow:todo_updated', {
+        taskId: 'task-1',
+        todoId: 'todo-step2',
+        status: 'failed',
+        failureReason: 'provider quota exhausted',
+      }),
+    );
+    const todo = updated.todoList.find((t) => t.id === 'todo-step2')!;
+    expect(todo.status).toBe('failed');
+    expect(todo.failureReason).toBe('provider quota exhausted');
+  });
+
+  test('workflow:subtasks_planned + subtask_updated track multi-agent state with deterministic labels', () => {
+    const seeded = reduceTurn(emptyTurn(), ev('task:start', { input: { id: 'parent-1' } }));
+    const planned = reduceTurn(
+      seeded,
+      ev('workflow:subtasks_planned', {
+        taskId: 'parent-1',
+        groupMode: 'competition',
+        subtasks: [
+          {
+            subtaskId: 'parent-1-delegate-s1',
+            parentTaskId: 'parent-1',
+            stepId: 's1',
+            fallbackLabel: 'Agent 1',
+            title: 'Answer',
+            objective: 'Answer question 1',
+            prompt: 'Answer question 1',
+            inputRefs: [],
+            status: 'planned',
+          },
+          {
+            subtaskId: 'parent-1-delegate-s2',
+            parentTaskId: 'parent-1',
+            stepId: 's2',
+            fallbackLabel: 'Agent 2',
+            title: 'Answer',
+            objective: 'Answer question 1',
+            prompt: 'Answer question 1',
+            inputRefs: [],
+            status: 'planned',
+            agentId: 'developer',
+            agentName: 'Developer',
+          },
+        ],
+      }),
+    );
+    expect(planned.multiAgentSubtasks).toHaveLength(2);
+    expect(planned.multiAgentSubtasks[0]!.fallbackLabel).toBe('Agent 1');
+    expect(planned.multiAgentSubtasks[1]!.agentName).toBe('Developer');
+    expect(planned.multiAgentGroupMode).toBe('competition');
+
+    const running = reduceTurn(
+      planned,
+      ev('workflow:subtask_updated', {
+        taskId: 'parent-1',
+        subtaskId: 'parent-1-delegate-s1',
+        stepId: 's1',
+        status: 'running',
+        agentId: 'researcher',
+      }),
+    );
+    expect(running.multiAgentSubtasks[0]!.status).toBe('running');
+    expect(running.multiAgentSubtasks[0]!.agentId).toBe('researcher');
+
+    const failed = reduceTurn(
+      running,
+      ev('workflow:subtask_updated', {
+        taskId: 'parent-1',
+        subtaskId: 'parent-1-delegate-s2',
+        stepId: 's2',
+        status: 'failed',
+        errorKind: 'timeout',
+        errorMessage: 'idle timeout after 180s',
+      }),
+    );
+    expect(failed.multiAgentSubtasks[1]!.status).toBe('failed');
+    expect(failed.multiAgentSubtasks[1]!.errorKind).toBe('timeout');
+    expect(failed.multiAgentSubtasks[1]!.errorMessage).toContain('180s');
+  });
+
+  test('stage events from a delegated sub-task are ignored on the parent turn', () => {
+    const parent = reduceTurn(emptyTurn(), ev('task:start', { input: { id: 'parent-1' } }));
+    const t = reduceTurn(
+      parent,
+      ev('workflow:decision_recorded', {
+        taskId: 'sub-task-99', // different id
+        decision: {
+          taskId: 'sub-task-99',
+          userPrompt: 'inner',
+          decisionKind: 'single-agent',
+          createdAt: 0,
+        },
+      }),
+    );
+    expect(t.decisionStage).toBeUndefined();
+  });
+
+  test('replay through reduceTurn produces the same manifest state as live emission', () => {
+    // Persisted-event replay must converge with live SSE — same reducer,
+    // so feeding the same payloads in the same order yields the same shape.
+    const events = [
+      ev('task:start', { input: { id: 'task-1' } }),
+      ev('workflow:decision_recorded', {
+        taskId: 'task-1',
+        decision: {
+          taskId: 'task-1',
+          userPrompt: 'g',
+          decisionKind: 'multi-agent',
+          createdAt: 0,
+        },
+      }),
+      ev('workflow:todo_created', {
+        taskId: 'task-1',
+        todoList: [
+          {
+            id: 'todo-s1',
+            title: 'A',
+            ownerType: 'system',
+            status: 'pending',
+            dependsOn: [],
+            sourceStepId: 's1',
+          },
+        ],
+      }),
+      ev('workflow:subtasks_planned', {
+        taskId: 'task-1',
+        subtasks: [
+          {
+            subtaskId: 'task-1-delegate-d1',
+            parentTaskId: 'task-1',
+            stepId: 'd1',
+            fallbackLabel: 'Agent 1',
+            title: 'Answer',
+            objective: 'x',
+            prompt: 'x',
+            inputRefs: [],
+            status: 'planned',
+          },
+        ],
+      }),
+    ];
+    const live = fold(emptyTurn(), events);
+    const replayed = fold(emptyTurn(), [...events]); // re-run same sequence
+    expect(replayed.decisionStage).toEqual(live.decisionStage);
+    expect(replayed.todoList).toEqual(live.todoList);
+    expect(replayed.multiAgentSubtasks).toEqual(live.multiAgentSubtasks);
+  });
+});

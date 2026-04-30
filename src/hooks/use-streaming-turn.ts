@@ -82,6 +82,105 @@ export type ProcessLogKind =
   | 'capability_research'
   | 'capability_research_failed';
 
+/**
+ * Stage manifest shapes — mirror of the backend's `WorkflowStageManifest`
+ * (src/orchestrator/workflow/stage-manifest.ts). Carried into the streaming
+ * turn so process replay can render the post-prompt decision, todo list,
+ * and multi-agent subtask manifest without re-deriving them client-side.
+ */
+export type WorkflowDecisionKind =
+  | 'conversational'
+  | 'direct-tool'
+  | 'single-agent'
+  | 'multi-agent'
+  | 'human-input-required'
+  | 'approval-required'
+  | 'full-pipeline'
+  | 'unknown';
+
+export interface WorkflowDecisionStageView {
+  taskId: string;
+  sessionId?: string;
+  userPrompt: string;
+  decisionKind: WorkflowDecisionKind;
+  decisionRationale?: string;
+  createdAt: number;
+  routingLevel?: number;
+  confidence?: number;
+}
+
+export type WorkflowTodoOwnerType = 'system' | 'agent' | 'human' | 'tool';
+export type WorkflowTodoStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped';
+
+export interface WorkflowTodoItemView {
+  id: string;
+  title: string;
+  description?: string;
+  ownerType: WorkflowTodoOwnerType;
+  ownerId?: string;
+  status: WorkflowTodoStatus;
+  dependsOn: string[];
+  sourceStepId?: string;
+  expectedOutput?: string;
+  failureReason?: string;
+}
+
+export type MultiAgentGroupMode =
+  | 'parallel'
+  | 'competition'
+  | 'debate'
+  | 'comparison'
+  | 'pipeline';
+
+export type MultiAgentSubtaskStatus =
+  | 'planned'
+  | 'dispatched'
+  | 'running'
+  | 'done'
+  | 'failed'
+  | 'timeout'
+  | 'skipped';
+
+export type MultiAgentSubtaskErrorKind =
+  | 'provider_quota'
+  | 'timeout'
+  | 'empty_response'
+  | 'parse_error'
+  | 'contract_violation'
+  | 'dependency_failed'
+  | 'subtask_failed'
+  | 'unknown';
+
+export interface MultiAgentSubtaskView {
+  subtaskId: string;
+  parentTaskId: string;
+  sessionId?: string;
+  stepId: string;
+  agentId?: string;
+  agentName?: string;
+  agentRole?: string;
+  capabilityTags?: string[];
+  /**
+   * Deterministic fallback label assigned by the backend (e.g. "Agent 1").
+   * Used by the UI in place of "agent?" when `agentId`/`agentName` are
+   * unset — guaranteed unique within the same multi-agent plan.
+   */
+  fallbackLabel: string;
+  title: string;
+  objective: string;
+  prompt: string;
+  inputRefs: string[];
+  expectedOutput?: string;
+  status: MultiAgentSubtaskStatus;
+  startedAt?: number;
+  completedAt?: number;
+  outputPreview?: string;
+  errorKind?: MultiAgentSubtaskErrorKind;
+  errorMessage?: string;
+  partialOutputAvailable?: boolean;
+  fallbackAttempted?: boolean;
+}
+
 export interface ProcessLogEntry {
   id: string;
   kind: ProcessLogKind;
@@ -100,6 +199,18 @@ const PROCESS_LOG_MAX = 50;
  * lists collapse the second entry and the timeline silently drops events.
  */
 let processLogSeq = 0;
+
+const MULTI_AGENT_GROUP_MODES: ReadonlySet<string> = new Set([
+  'parallel',
+  'competition',
+  'debate',
+  'comparison',
+  'pipeline',
+]);
+
+function isMultiAgentGroupMode(v: unknown): v is MultiAgentGroupMode {
+  return typeof v === 'string' && MULTI_AGENT_GROUP_MODES.has(v);
+}
 
 function appendProcessLog(turn: StreamingTurn, entry: ProcessLogEntry): StreamingTurn {
   processLogSeq += 1;
@@ -301,6 +412,17 @@ export interface StreamingTurn {
    * The reducer in `coding-cli-state.ts` is the single mutator.
    */
   codingCliSessions: Record<string, CodingCliSessionState>;
+  /**
+   * Stage manifest — durable post-prompt decision/todo/multi-agent state.
+   * Set by `workflow:decision_recorded`; updated by `workflow:todo_*` and
+   * `workflow:subtask_*`. Survives reload because every event is recorded
+   * to the task event log and replayed through `reduceTurn`.
+   */
+  decisionStage?: WorkflowDecisionStageView;
+  todoList: WorkflowTodoItemView[];
+  multiAgentSubtasks: MultiAgentSubtaskView[];
+  /** Group mode for the multi-agent set (competition/debate/comparison). */
+  multiAgentGroupMode?: MultiAgentGroupMode;
   /** Internal stream bookkeeping used to de-dupe legacy/rich text events. */
   stream?: StreamState;
   /**
@@ -420,6 +542,8 @@ export function emptyTurn(options: { taskId?: string; startedAt?: number; recove
     stepOutputs: {},
     processLog: [],
     codingCliSessions: {},
+    todoList: [],
+    multiAgentSubtasks: [],
   };
 }
 
@@ -1253,6 +1377,158 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
         pendingHumanInput: undefined,
         pendingPartialDecision: undefined,
       };
+    }
+    case 'workflow:decision_recorded': {
+      // Stage manifest entry point — capture the post-prompt decision
+      // BEFORE the approval gate / plan_ready surface fires. Sub-task
+      // isolation: ignore decisions from a delegated sub-task whose own
+      // workflow runs (their decisions are scoped to the sub-task, not
+      // the parent turn we are rendering).
+      const eventTaskId = typeof p.taskId === 'string' ? (p.taskId as string) : undefined;
+      if (eventTaskId && turn.taskId && eventTaskId !== turn.taskId) return turn;
+      const decisionRaw = p.decision as Record<string, unknown> | undefined;
+      if (!decisionRaw) return turn;
+      const decisionKind = decisionRaw.decisionKind as WorkflowDecisionKind | undefined;
+      if (!decisionKind) return turn;
+      const next: WorkflowDecisionStageView = {
+        taskId: typeof decisionRaw.taskId === 'string' ? (decisionRaw.taskId as string) : turn.taskId,
+        sessionId: typeof decisionRaw.sessionId === 'string' ? (decisionRaw.sessionId as string) : undefined,
+        userPrompt: typeof decisionRaw.userPrompt === 'string' ? (decisionRaw.userPrompt as string) : '',
+        decisionKind,
+        decisionRationale:
+          typeof decisionRaw.decisionRationale === 'string' ? (decisionRaw.decisionRationale as string) : undefined,
+        createdAt: typeof decisionRaw.createdAt === 'number' ? (decisionRaw.createdAt as number) : event.ts,
+        routingLevel:
+          typeof decisionRaw.routingLevel === 'number' ? (decisionRaw.routingLevel as number) : undefined,
+        confidence: typeof decisionRaw.confidence === 'number' ? (decisionRaw.confidence as number) : undefined,
+      };
+      return { ...turn, decisionStage: next };
+    }
+    case 'workflow:todo_created': {
+      const eventTaskId = typeof p.taskId === 'string' ? (p.taskId as string) : undefined;
+      if (eventTaskId && turn.taskId && eventTaskId !== turn.taskId) return turn;
+      const raw = Array.isArray(p.todoList) ? (p.todoList as unknown[]) : [];
+      const todoList: WorkflowTodoItemView[] = [];
+      for (const r of raw) {
+        if (!r || typeof r !== 'object') continue;
+        const o = r as Record<string, unknown>;
+        const id = typeof o.id === 'string' ? o.id : undefined;
+        const title = typeof o.title === 'string' ? o.title : undefined;
+        const ownerType = o.ownerType as WorkflowTodoOwnerType | undefined;
+        const status = (o.status as WorkflowTodoStatus | undefined) ?? 'pending';
+        if (!id || !title || !ownerType) continue;
+        todoList.push({
+          id,
+          title,
+          description: typeof o.description === 'string' ? (o.description as string) : undefined,
+          ownerType,
+          ownerId: typeof o.ownerId === 'string' ? (o.ownerId as string) : undefined,
+          status,
+          dependsOn: Array.isArray(o.dependsOn)
+            ? (o.dependsOn as unknown[]).filter((d): d is string => typeof d === 'string')
+            : [],
+          sourceStepId: typeof o.sourceStepId === 'string' ? (o.sourceStepId as string) : undefined,
+          expectedOutput: typeof o.expectedOutput === 'string' ? (o.expectedOutput as string) : undefined,
+          failureReason: typeof o.failureReason === 'string' ? (o.failureReason as string) : undefined,
+        });
+      }
+      const groupMode = isMultiAgentGroupMode(p.groupMode) ? (p.groupMode as MultiAgentGroupMode) : turn.multiAgentGroupMode;
+      return {
+        ...turn,
+        todoList,
+        ...(groupMode ? { multiAgentGroupMode: groupMode } : {}),
+      };
+    }
+    case 'workflow:todo_updated': {
+      const eventTaskId = typeof p.taskId === 'string' ? (p.taskId as string) : undefined;
+      if (eventTaskId && turn.taskId && eventTaskId !== turn.taskId) return turn;
+      const todoId = typeof p.todoId === 'string' ? (p.todoId as string) : undefined;
+      const status = p.status as WorkflowTodoStatus | undefined;
+      if (!todoId || !status) return turn;
+      const failureReason = typeof p.failureReason === 'string' ? (p.failureReason as string) : undefined;
+      const todoList = turn.todoList.map((t) =>
+        t.id === todoId ? { ...t, status, ...(failureReason ? { failureReason } : {}) } : t,
+      );
+      return { ...turn, todoList };
+    }
+    case 'workflow:subtasks_planned': {
+      const eventTaskId = typeof p.taskId === 'string' ? (p.taskId as string) : undefined;
+      if (eventTaskId && turn.taskId && eventTaskId !== turn.taskId) return turn;
+      const raw = Array.isArray(p.subtasks) ? (p.subtasks as unknown[]) : [];
+      const subtasks: MultiAgentSubtaskView[] = [];
+      for (const r of raw) {
+        if (!r || typeof r !== 'object') continue;
+        const o = r as Record<string, unknown>;
+        const subtaskId = typeof o.subtaskId === 'string' ? o.subtaskId : undefined;
+        const stepId = typeof o.stepId === 'string' ? o.stepId : undefined;
+        const fallbackLabel = typeof o.fallbackLabel === 'string' ? o.fallbackLabel : undefined;
+        if (!subtaskId || !stepId || !fallbackLabel) continue;
+        const status = (o.status as MultiAgentSubtaskStatus | undefined) ?? 'planned';
+        subtasks.push({
+          subtaskId,
+          parentTaskId: typeof o.parentTaskId === 'string' ? (o.parentTaskId as string) : turn.taskId,
+          sessionId: typeof o.sessionId === 'string' ? (o.sessionId as string) : undefined,
+          stepId,
+          agentId: typeof o.agentId === 'string' ? (o.agentId as string) : undefined,
+          agentName: typeof o.agentName === 'string' ? (o.agentName as string) : undefined,
+          agentRole: typeof o.agentRole === 'string' ? (o.agentRole as string) : undefined,
+          capabilityTags: Array.isArray(o.capabilityTags)
+            ? (o.capabilityTags as unknown[]).filter((t): t is string => typeof t === 'string')
+            : undefined,
+          fallbackLabel,
+          title: typeof o.title === 'string' ? (o.title as string) : stepId,
+          objective: typeof o.objective === 'string' ? (o.objective as string) : '',
+          prompt: typeof o.prompt === 'string' ? (o.prompt as string) : '',
+          inputRefs: Array.isArray(o.inputRefs)
+            ? (o.inputRefs as unknown[]).filter((s): s is string => typeof s === 'string')
+            : [],
+          expectedOutput: typeof o.expectedOutput === 'string' ? (o.expectedOutput as string) : undefined,
+          status,
+          startedAt: typeof o.startedAt === 'number' ? (o.startedAt as number) : undefined,
+          completedAt: typeof o.completedAt === 'number' ? (o.completedAt as number) : undefined,
+          outputPreview: typeof o.outputPreview === 'string' ? (o.outputPreview as string) : undefined,
+          errorKind: o.errorKind as MultiAgentSubtaskErrorKind | undefined,
+          errorMessage: typeof o.errorMessage === 'string' ? (o.errorMessage as string) : undefined,
+          partialOutputAvailable:
+            typeof o.partialOutputAvailable === 'boolean' ? (o.partialOutputAvailable as boolean) : undefined,
+          fallbackAttempted:
+            typeof o.fallbackAttempted === 'boolean' ? (o.fallbackAttempted as boolean) : undefined,
+        });
+      }
+      const groupMode = isMultiAgentGroupMode(p.groupMode) ? (p.groupMode as MultiAgentGroupMode) : turn.multiAgentGroupMode;
+      return {
+        ...turn,
+        multiAgentSubtasks: subtasks,
+        ...(groupMode ? { multiAgentGroupMode: groupMode } : {}),
+      };
+    }
+    case 'workflow:subtask_updated': {
+      const eventTaskId = typeof p.taskId === 'string' ? (p.taskId as string) : undefined;
+      if (eventTaskId && turn.taskId && eventTaskId !== turn.taskId) return turn;
+      const subtaskId = typeof p.subtaskId === 'string' ? (p.subtaskId as string) : undefined;
+      const status = p.status as MultiAgentSubtaskStatus | undefined;
+      if (!subtaskId || !status) return turn;
+      const patch: Partial<MultiAgentSubtaskView> = {
+        status,
+        ...(typeof p.agentId === 'string' ? { agentId: p.agentId as string } : {}),
+        ...(typeof p.startedAt === 'number' ? { startedAt: p.startedAt as number } : {}),
+        ...(typeof p.completedAt === 'number' ? { completedAt: p.completedAt as number } : {}),
+        ...(typeof p.outputPreview === 'string' ? { outputPreview: p.outputPreview as string } : {}),
+        ...(typeof p.errorKind === 'string'
+          ? { errorKind: p.errorKind as MultiAgentSubtaskErrorKind }
+          : {}),
+        ...(typeof p.errorMessage === 'string' ? { errorMessage: p.errorMessage as string } : {}),
+        ...(typeof p.partialOutputAvailable === 'boolean'
+          ? { partialOutputAvailable: p.partialOutputAvailable as boolean }
+          : {}),
+        ...(typeof p.fallbackAttempted === 'boolean'
+          ? { fallbackAttempted: p.fallbackAttempted as boolean }
+          : {}),
+      };
+      const multiAgentSubtasks = turn.multiAgentSubtasks.map((s) =>
+        s.subtaskId === subtaskId ? { ...s, ...patch } : s,
+      );
+      return { ...turn, multiAgentSubtasks };
     }
     case 'workflow:plan_ready': {
       // Phase E: workflow executor pauses with `awaitingApproval=true` for

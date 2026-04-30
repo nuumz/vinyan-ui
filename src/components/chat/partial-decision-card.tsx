@@ -12,6 +12,15 @@ interface PartialDecisionCardProps {
   planSteps: PlanStep[];
   /** Wall-clock "now" in ms (parent ticks it on a 1s interval). */
   nowMs: number;
+  /**
+   * Historical replay mode. Hides the continue/abort buttons and the
+   * countdown — the gate is shown as a recorded "decision was needed"
+   * snapshot, not an interactive prompt. The user's resolution itself is
+   * not on this card; if it landed in the persisted log the reducer
+   * cleared `pendingPartialDecision`, so seeing this card historically
+   * means the recording stopped before the user answered.
+   */
+  readOnly?: boolean;
 }
 
 function formatRemaining(ms: number): string {
@@ -54,6 +63,7 @@ export function PartialDecisionCard({
   pending,
   planSteps,
   nowMs,
+  readOnly = false,
 }: PartialDecisionCardProps) {
   const provide = useProvidePartialFailureDecision();
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -94,15 +104,17 @@ export function PartialDecisionCard({
           </div>
           <div className="text-xs text-text/85 mt-0.5">{pending.summary}</div>
         </div>
-        <div
-          className={cn(
-            'shrink-0 text-[10px] font-mono tabular-nums',
-            expired ? 'text-red' : 'text-text-dim',
-          )}
-          title="Time before the executor auto-aborts"
-        >
-          {expired ? 'expired' : `${formatRemaining(remainingMs)} left`}
-        </div>
+        {!readOnly && (
+          <div
+            className={cn(
+              'shrink-0 text-[10px] font-mono tabular-nums',
+              expired ? 'text-red' : 'text-text-dim',
+            )}
+            title="Time before the executor auto-aborts"
+          >
+            {expired ? 'expired' : `${formatRemaining(remainingMs)} left`}
+          </div>
+        )}
       </div>
 
       <div className="text-[11.5px] space-y-1 pl-1">
@@ -148,38 +160,44 @@ export function PartialDecisionCard({
         </div>
       )}
 
-      <div className="flex items-center gap-2 flex-wrap pt-0.5">
-        <button
-          type="button"
-          onClick={() => submit('continue')}
-          disabled={busy || expired}
-          className={cn(
-            'inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded transition-colors',
-            'bg-yellow/15 hover:bg-yellow/25 border border-yellow/40 text-yellow',
-            (busy || expired) && 'opacity-50 cursor-not-allowed hover:bg-yellow/15',
+      {!readOnly ? (
+        <div className="flex items-center gap-2 flex-wrap pt-0.5">
+          <button
+            type="button"
+            onClick={() => submit('continue')}
+            disabled={busy || expired}
+            className={cn(
+              'inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded transition-colors',
+              'bg-yellow/15 hover:bg-yellow/25 border border-yellow/40 text-yellow',
+              (busy || expired) && 'opacity-50 cursor-not-allowed hover:bg-yellow/15',
+            )}
+          >
+            <Play size={11} /> Continue with partial
+          </button>
+          <button
+            type="button"
+            onClick={() => submit('abort')}
+            disabled={busy || expired}
+            autoFocus
+            className={cn(
+              'inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded transition-colors',
+              'bg-red/10 hover:bg-red/20 border border-red/40 text-red',
+              (busy || expired) && 'opacity-50 cursor-not-allowed hover:bg-red/10',
+            )}
+          >
+            <X size={11} /> Abort
+          </button>
+          {expired && (
+            <span className="text-[10px] text-text-dim italic">
+              timeout reached — executor will auto-abort
+            </span>
           )}
-        >
-          <Play size={11} /> Continue with partial
-        </button>
-        <button
-          type="button"
-          onClick={() => submit('abort')}
-          disabled={busy || expired}
-          autoFocus
-          className={cn(
-            'inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded transition-colors',
-            'bg-red/10 hover:bg-red/20 border border-red/40 text-red',
-            (busy || expired) && 'opacity-50 cursor-not-allowed hover:bg-red/10',
-          )}
-        >
-          <X size={11} /> Abort
-        </button>
-        {expired && (
-          <span className="text-[10px] text-text-dim italic">
-            timeout reached — executor will auto-abort
-          </span>
-        )}
-      </div>
+        </div>
+      ) : (
+        <div className="text-[11px] text-text-dim italic">
+          Read-only — no continue/abort decision recorded.
+        </div>
+      )}
     </div>
   );
 }
