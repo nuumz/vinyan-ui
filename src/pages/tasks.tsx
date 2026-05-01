@@ -18,7 +18,6 @@ import { TasksTable } from '@/components/tasks/tasks-table';
 import { TaskDetailDrawer } from '@/components/tasks/task-detail-drawer';
 
 const DEFAULT_TASK_BUDGET = { maxTokens: 50_000, maxDurationMs: 180_000, maxRetries: 3 } as const;
-const TIMEOUT_RETRY_BUDGET = { maxTokens: 50_000, maxDurationMs: 240_000, maxRetries: 3 } as const;
 
 type TabId =
   | 'all'
@@ -142,12 +141,13 @@ export default function Tasks() {
       toast.error('Cannot retry: no goal available');
       return;
     }
+    // Retry budget is a backend policy decision now: the server reads
+    // the parent's persisted state (timeout vs non-timeout failure)
+    // and picks the right budget shape, then echoes the choice back
+    // as `policy` on the response. The UI just signals intent — it
+    // never encodes the policy itself.
     retryTask.mutate(
-      {
-        taskId: task.taskId,
-        reason: 'manual-retry-from-tasks-console',
-        ...(task.needsActionType === 'timeout' ? { maxDurationMs: TIMEOUT_RETRY_BUDGET.maxDurationMs } : {}),
-      },
+      { taskId: task.taskId, reason: 'manual-retry-from-tasks-console' },
       {
         onSuccess: () => toast.success('Retry submitted'),
         onError: (err) => {
@@ -158,7 +158,7 @@ export default function Tasks() {
               goal: retryGoal,
               taskType: task.affectedFiles?.length ? 'code' : 'reasoning',
               targetFiles: task.affectedFiles,
-              budget: TIMEOUT_RETRY_BUDGET,
+              budget: DEFAULT_TASK_BUDGET,
             });
           }
         },

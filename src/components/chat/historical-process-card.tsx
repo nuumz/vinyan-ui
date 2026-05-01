@@ -21,9 +21,8 @@ import { useMemo } from 'react';
 import { useTaskEvents } from '@/hooks/use-task-events';
 import { useTaskProcessState } from '@/hooks/use-task-process-state';
 import {
-  fromBackendCompleteness,
   normalizeReplayedTurnForDisplay,
-  replayCompleteness,
+  selectAuthoritativeCompleteness,
 } from '@/lib/replay-completeness';
 import { ReplayCompletenessBanner } from './replay-completeness-banner';
 import { TurnProcessSurfaces } from './turn-process-surfaces';
@@ -56,20 +55,19 @@ export function HistoricalProcessCard({ taskId }: HistoricalProcessCardProps) {
   // (older agents not yet redeployed).
   const projection = useTaskProcessState(taskId, { enabled: true });
 
-  // Classify the persisted log honestly. Backend projection wins; local
-  // classifier is a fallback only.
-  const completeness = useMemo(() => {
-    if (projection.data?.completeness) {
-      return fromBackendCompleteness(
-        projection.data.completeness,
-        projection.data.lifecycle.terminalEventType,
-      );
-    }
-    return replayCompleteness(events ?? [], {
-      unsupported,
-      error: !!error && !unsupported,
-    });
-  }, [projection.data, events, unsupported, error]);
+  // Classify the persisted log honestly. Backend projection wins; the
+  // local classifier is a fallback only. The selector is pure — see
+  // `tests/lib/replay-completeness-adapter.test.ts` for the
+  // projection-priority contract.
+  const completeness = useMemo(
+    () =>
+      selectAuthoritativeCompleteness(projection.data, {
+        events: events ?? [],
+        unsupported,
+        error: !!error && !unsupported,
+      }),
+    [projection.data, events, unsupported, error],
+  );
 
   if (isLoading) {
     return (

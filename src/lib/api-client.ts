@@ -302,6 +302,22 @@ export interface TaskProcessCodingCliResolvedApproval {
   requestedAt: number;
 }
 
+export interface TaskProcessCodingCliFailureDetail {
+  reason?: string;
+  at: number;
+}
+
+export interface TaskProcessCodingCliCancelDetail {
+  by?: string;
+  reason?: string;
+  at: number;
+}
+
+export interface TaskProcessCodingCliStalledDetail {
+  idleMs: number;
+  at: number;
+}
+
 export interface TaskProcessCodingCliSession {
   id: string;
   taskId: string;
@@ -315,6 +331,9 @@ export interface TaskProcessCodingCliSession {
   pendingApprovals: TaskProcessCodingCliPendingApproval[];
   resolvedApprovals: TaskProcessCodingCliResolvedApproval[];
   finalResult?: unknown;
+  failureDetail?: TaskProcessCodingCliFailureDetail;
+  cancelDetail?: TaskProcessCodingCliCancelDetail;
+  stalledDetail?: TaskProcessCodingCliStalledDetail;
 }
 
 export interface TaskProcessPhase {
@@ -377,6 +396,15 @@ export interface PendingApproval {
   riskScore: number;
   reason: string;
   requestedAt: number;
+  /** Distinct approval slot under the same taskId — defaults to `'default'`
+   *  on the backend. Surfaced for client-side dedupe and for callers that
+   *  need to address a specific slot. */
+  approvalKey?: string;
+  /** Stable durable id from the approval ledger when wired. Preferred
+   *  dedupe key on the client. */
+  approvalId?: string;
+  profile?: string;
+  sessionId?: string;
 }
 
 export interface TaskResult {
@@ -1748,15 +1776,24 @@ export const api = {
 
   /**
    * Manual retry for a failed/timed-out task. Preserves session, goal,
-   * targetFiles, and constraints from the parent. Defaults to a 240s
-   * budget on the backend; pass `body.maxDurationMs` or `body.budget`
-   * to override.
+   * targetFiles, and constraints from the parent. The retry budget is
+   * a backend policy decision — the server reads the parent's persisted
+   * state and picks the right shape (timeout-recovery vs standard).
+   * The chosen policy is echoed back in the response as `policy`.
+   *
+   * `body.budget` / `body.maxDurationMs` remain accepted as escape
+   * hatches for operator overrides; the response then reports
+   * `policy: 'client-override'`. Standard UI flows (the Tasks console
+   * retry button) MUST NOT send these fields — the policy belongs to
+   * the backend.
    */
   retryTask: (
     id: string,
     body?: {
       reason?: string;
+      /** Operator override only — UI default flows omit this. */
       maxDurationMs?: number;
+      /** Operator override only — UI default flows omit this. */
       budget?: { maxTokens: number; maxDurationMs: number; maxRetries: number };
       goal?: string;
       constraints?: string[];
@@ -1768,6 +1805,8 @@ export const api = {
       sessionId?: string;
       status: string;
       budget: { maxTokens: number; maxDurationMs: number; maxRetries: number };
+      /** Which retry policy the server applied — 'timeout' / 'standard' / 'client-override'. */
+      policy: 'timeout' | 'standard' | 'client-override';
     }>(`/tasks/${encodeURIComponent(id)}/retry`, {
       method: 'POST',
       body: JSON.stringify(body ?? {}),

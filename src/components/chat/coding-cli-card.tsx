@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   AlertCircle,
   ChevronRight,
@@ -11,6 +11,8 @@ import {
 import { cn } from '@/lib/utils';
 import type { StreamingTurn } from '@/hooks/use-streaming-turn';
 import type { CodingCliSessionState, CodingCliToolEntry } from '@/hooks/coding-cli-state';
+import { useTaskProcessState } from '@/hooks/use-task-process-state';
+import { mergeCodingCliSessions } from '@/lib/coding-cli-projection';
 import { ProviderBadge, StateChip } from './coding-cli-shared';
 import { CodingCliApprovalCard } from './coding-cli-approval-card';
 import { CodingCliResult } from './coding-cli-result';
@@ -47,7 +49,19 @@ const TERMINAL_STATES = new Set([
  * convention as the other StreamingBubble children.
  */
 export function CodingCliCard({ turn }: CodingCliCardProps) {
-  const sessions = Object.values(turn.codingCliSessions);
+  const localCount = Object.keys(turn.codingCliSessions).length;
+  // Backend-authoritative projection. Enabled only when the local
+  // turn already shows a coding-cli session (so we don't fan out
+  // network calls for tasks without any CLI activity). The
+  // `useTaskProcessState` hook is keyed by taskId, so React Query
+  // dedupes overlapping fetches across multiple CodingCliCard
+  // instances rendering the same task.
+  const projection = useTaskProcessState(turn.taskId, { enabled: localCount > 0 });
+  const merged = useMemo(
+    () => mergeCodingCliSessions(turn.codingCliSessions, projection.data?.codingCliSessions ?? []),
+    [turn.codingCliSessions, projection.data?.codingCliSessions],
+  );
+  const sessions = Object.values(merged);
   if (sessions.length === 0) return null;
   // Most-recently-created last (chronological). The reducer doesn't
   // sort, so we sort here defensively.

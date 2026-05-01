@@ -2,6 +2,7 @@ import { useCallback, useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useSSE } from '@/lib/use-sse';
 import { qk } from '@/lib/query-keys';
+import { extractTaskIdFromPayload, isReconcileTriggerEvent } from '@/lib/process-state-triggers';
 import { useConnectionStore } from '@/store/connection-store';
 import { useEventsStore } from '@/store/vinyan-store';
 import { toast } from '@/store/toast-store';
@@ -32,6 +33,28 @@ export function useSSESync({ enabled }: UseSSESyncOptions) {
     (event: SSEEvent) => {
       addEvent(event);
       const turnUpdate = ingestGlobalTurn(event);
+
+      // Reconcile against the backend-authoritative task process
+      // projection. The local `reduceTurn` fold above is optimistic
+      // for instant UX; on terminal/gate/coding-cli triggers we
+      // invalidate the projection query so any active
+      // `useTaskProcessState(taskId)` consumer (drawer / historical
+      // card / coding-cli card) refetches and replaces optimistic
+      // state with backend authority.
+      if (isReconcileTriggerEvent(event.event, event.payload as Record<string, unknown> | null)) {
+        const taskId = extractTaskIdFromPayload(event.payload);
+        if (taskId) {
+          queryClient.invalidateQueries({
+            queryKey: ['task-process-state', taskId],
+            refetchType: 'active',
+          });
+        } else {
+          // Trigger event without a taskId — shouldn't happen for the
+          // canonical set, but if it does, fall back to a partial-key
+          // invalidation. React Query dedupes overlapping refetches.
+          queryClient.invalidateQueries({ queryKey: ['task-process-state'], refetchType: 'active' });
+        }
+      }
 
       // Debounced batching would be nicer, but invalidateQueries is cheap —
       // TanStack Query dedups in-flight refetches automatically.

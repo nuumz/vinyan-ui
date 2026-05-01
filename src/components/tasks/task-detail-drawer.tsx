@@ -10,7 +10,8 @@ import {
 } from '@/hooks/use-tasks';
 import { useResolveApproval } from '@/hooks/use-approvals';
 import { useTaskEvents } from '@/hooks/use-task-events';
-import type { TaskNeedsActionType, TaskSummary } from '@/lib/api-client';
+import type { TaskSummary } from '@/lib/api-client';
+import { resolveDrawerNeedsAction } from '@/lib/drawer-gate-resolution';
 import { Tabs, type TabItem } from '@/components/ui/tabs';
 import { StatusBadge } from '@/components/ui/badge';
 import { JsonView } from '@/components/ui/json-view';
@@ -21,24 +22,6 @@ import { cn } from '@/lib/utils';
 import { NeedsActionBadge } from './needs-action-badge';
 
 type TabId = 'overview' | 'process' | 'result' | 'trace' | 'events' | 'actions';
-
-/**
- * Reconcile the row-level needs-action heuristic with the drawer's
- * authoritative `pendingGates` map. The list endpoint already overrides
- * `partial-decision` to `none` when no gate is open, but the data may
- * have been cached when the gate was still pending — re-checking here
- * keeps the header honest the moment the detail response lands.
- */
-function resolveDrawerNeedsAction(
-  rowType: TaskNeedsActionType,
-  gates: { partialDecision: boolean; humanInput: boolean; approval: boolean } | null,
-): TaskNeedsActionType {
-  if (!gates) return rowType;
-  if (rowType === 'partial-decision' && !gates.partialDecision) return 'none';
-  if (rowType === 'workflow-human-input' && !gates.humanInput) return 'none';
-  if (rowType === 'approval' && !gates.approval) return 'none';
-  return rowType;
-}
 
 const TABS: ReadonlyArray<TabItem<TabId>> = [
   { id: 'overview', label: 'Overview' },

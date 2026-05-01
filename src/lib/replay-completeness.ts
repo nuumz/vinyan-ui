@@ -18,7 +18,7 @@
  *
  * No backend round-trips here; classification is rule-based on event types.
  */
-import type { TaskProcessCompleteness, TaskProcessCompletenessKind } from './api-client';
+import type { TaskProcessCompleteness, TaskProcessCompletenessKind, TaskProcessProjection } from './api-client';
 
 export type ReplayCompletenessKind =
   /** `task:complete` arrived and the reducer settled to `done`. */
@@ -198,6 +198,38 @@ export function normalizeReplayedTurnForDisplay<T>(turn: T, _completeness: Repla
  * enum) and copies the count + timestamps verbatim. The local
  * `replayCompleteness` is a fallback only when the projection is absent.
  */
+/**
+ * Pure selector — pick the authoritative completeness for a task.
+ *
+ * Backend projection wins when present (via `fromBackendCompleteness`).
+ * The local classifier (`replayCompleteness`) is only consulted when
+ * the projection is unavailable (404 / network error / not yet
+ * loaded). This is the contract `<HistoricalProcessCard>` delegates to,
+ * extracted as a pure function so the projection-priority invariant
+ * is testable without spinning up React.
+ *
+ * Test contract: when `projection.completeness` is present, the
+ * fallback inputs are NEVER consulted. A test that probes this with
+ * an invalid `events` array but valid projection must still return
+ * the backend completeness untouched.
+ */
+export function selectAuthoritativeCompleteness(
+  projection: Pick<TaskProcessProjection, 'completeness' | 'lifecycle'> | null | undefined,
+  fallback: {
+    readonly events: ReadonlyArray<{ eventType: string; ts: number; payload?: Record<string, unknown> }>;
+    readonly unsupported: boolean;
+    readonly error: boolean;
+  },
+): ReplayCompleteness {
+  if (projection?.completeness) {
+    return fromBackendCompleteness(projection.completeness, projection.lifecycle.terminalEventType);
+  }
+  return replayCompleteness(fallback.events, {
+    unsupported: fallback.unsupported,
+    error: fallback.error,
+  });
+}
+
 export function fromBackendCompleteness(
   c: TaskProcessCompleteness,
   /** Optional terminal event type from the projection's lifecycle for richer banner copy. */

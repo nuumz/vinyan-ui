@@ -116,9 +116,24 @@ export default function SessionChat() {
       .filter((t) => t.sessionId === sessionId)
       .map((t) => t.taskId);
     if (sessionTaskIds.length === 0) return [];
-    return approvals.filter((a) =>
+    const filtered = approvals.filter((a) =>
       sessionTaskIds.some((tid) => a.taskId === tid || a.taskId.startsWith(`${tid}-`)),
     );
+    // Defensive dedupe by the canonical slot key. The backend gate is
+    // already idempotent per (taskId, approvalKey) but two payloads
+    // describing the same slot would still render two stacked cards if
+    // the cache was populated from overlapping sources (SSE + refetch
+    // race, multi-tab). Distinct approvalKeys for the same task are
+    // legitimate separate gates and are preserved.
+    const seen = new Set<string>();
+    const deduped: typeof filtered = [];
+    for (const a of filtered) {
+      const key = a.approvalId ?? `${a.taskId}:${a.approvalKey ?? 'default'}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      deduped.push(a);
+    }
+    return deduped;
   }, [sessionId, approvalsQuery.data, tasksQuery.data]);
   // Treat the input as busy whenever a turn is still in flight — running OR
   // paused at the workflow approval gate. A fresh mount after navigating
@@ -374,7 +389,10 @@ export default function SessionChat() {
         {sessionApprovals.length > 0 && (
           <div className="space-y-2">
             {sessionApprovals.map((a) => (
-              <TaskApprovalCard key={a.taskId} pending={a} />
+              <TaskApprovalCard
+                key={a.approvalId ?? `${a.taskId}:${a.approvalKey ?? 'default'}`}
+                pending={a}
+              />
             ))}
           </div>
         )}
