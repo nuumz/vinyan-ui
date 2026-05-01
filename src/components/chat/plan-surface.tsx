@@ -318,6 +318,24 @@ function PlanSurfaceImpl({ turn, suppressDelegateOutputs = false }: PlanSurfaceP
       }, null)?.id
     : undefined;
 
+  // Synthesis-step de-dup. When a multi-step workflow ends in an
+  // `llm-reasoning` step that aggregates prior steps into the final
+  // answer, that step's output IS what FinalAnswer surfaces below the
+  // plan. Showing it again here makes the same content render twice —
+  // once as an expandable plan row, once as the canonical final answer
+  // card. Drop it in the plan once the turn has finished and there is
+  // a concrete final answer to defer to. While streaming, keep the
+  // output visible so the user can read tokens as they arrive.
+  const finalSynthesisStepId = (() => {
+    if (turn.status !== 'done') return undefined;
+    if (turn.finalContent.trim().length === 0) return undefined;
+    if (turn.planSteps.length < 2) return undefined;
+    const last = turn.planSteps[turn.planSteps.length - 1];
+    if (!last) return undefined;
+    if (last.strategy !== 'llm-reasoning') return undefined;
+    return last.id;
+  })();
+
   return (
     <div className="rounded-md bg-bg/20 px-3 py-2 space-y-1.5">
       <div className="flex items-center justify-between gap-2 text-[11px] uppercase tracking-wide text-text-dim font-medium">
@@ -343,6 +361,7 @@ function PlanSurfaceImpl({ turn, suppressDelegateOutputs = false }: PlanSurfaceP
             isDelegate &&
             turn.multiAgentSubtasks.some((s) => s.stepId === step.id) &&
             turn.multiAgentSubtasks.length >= 2;
+          const ownedByFinalAnswer = step.id === finalSynthesisStepId;
           const subtask = subtasksByStepId.get(step.id);
           return (
             <StepRow
@@ -355,11 +374,18 @@ function PlanSurfaceImpl({ turn, suppressDelegateOutputs = false }: PlanSurfaceP
               // Per-step output is empty for delegates today, but be
               // explicit so a future change that streams synthesis into
               // a delegate's stepOutputs doesn't accidentally re-duplicate.
-              output={ownedByTimeline ? '' : turn.stepOutputs[step.id] ?? ''}
+              // The final synthesis step is owned by FinalAnswer below
+              // once the turn finishes — drop it here to avoid the same
+              // content rendering twice.
+              output={
+                ownedByTimeline || ownedByFinalAnswer
+                  ? ''
+                  : turn.stepOutputs[step.id] ?? ''
+              }
               defaultOpen={
                 step.status === 'running' ||
                 step.status === 'failed' ||
-                step.id === lastFinishedStepId
+                (step.id === lastFinishedStepId && !ownedByFinalAnswer)
               }
               isStreaming={isTurnStreaming && step.status === 'running'}
               suppressDelegateChip={ownedByTimeline || dedupChipOnly}

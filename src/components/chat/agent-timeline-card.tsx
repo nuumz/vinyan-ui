@@ -909,13 +909,22 @@ function AgentTimelineCardImpl({
           const isWinner =
             !!winnerAgentId &&
             (row.agentId === winnerAgentId || subtask?.agentId === winnerAgentId);
+          // Avoid duplicating the winner's full output: when CompareDrawer
+          // auto-opens for COMPETITION turns, the winner column already
+          // shows it, so don't ALSO default-expand the row drawer (which
+          // would render the same outputPreview a second time below). The
+          // 🏆 badge + "Verdict:" reasoning line stay visible on the
+          // collapsed row, so the winner identity is never lost.
+          const winnerAlreadyVisibleInDrawer = isWinner && competitionAutoCompare;
           return (
             <DelegateRow
               key={row.id}
               step={row}
               events={eventsByStep.get(row.id) ?? []}
               isLive={isLive}
-              defaultOpen={row.status === 'failed' || isWinner}
+              defaultOpen={
+                row.status === 'failed' || (isWinner && !winnerAlreadyVisibleInDrawer)
+              }
               nowMs={nowMs}
               subtask={subtask}
               forceOpen={forceAllOpen}
