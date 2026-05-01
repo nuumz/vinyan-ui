@@ -26,6 +26,7 @@ import type { MultiAgentSubtaskView, PlanStep, ToolCall } from '@/hooks/use-stre
 import { classifyTool, toolBadgeLabel, toolPrimaryPreview } from '@/lib/summarize-tools';
 import type { ToolCategory } from '@/lib/summarize-tools';
 import { Markdown } from './markdown';
+import { GROUP_MODE_LABEL } from './stage-manifest-surface';
 
 /**
  * Multi-agent activity card. Lifecycle-aware surface for `delegate-sub-agent`
@@ -104,6 +105,24 @@ export interface AgentTimelineCardProps {
   /** Free-text reasoning from the verdict — shown as a one-line note
    *  under the winning DelegateRow. Optional. */
   winnerReasoning?: string;
+  /**
+   * Planner's rewritten goal for the workflow (`turn.decisionStage.decisionRationale`).
+   * Folded into the timeline header as the rationale slot when the per-row
+   * `sharedLabel` is unavailable (single delegate, mixed labels, unresolved
+   * `$step1.result` placeholders), so the rewritten goal never disappears
+   * even though StageManifestSurface no longer renders for delegate flows.
+   */
+  decisionRationale?: string;
+  /**
+   * Routing level chosen for the workflow (`turn.decisionStage.routingLevel`).
+   * Surfaced as a compact `L<n>` badge in the timeline metadata strip.
+   */
+  routingLevel?: number;
+  /**
+   * Decision confidence (0..1) (`turn.decisionStage.confidence`). Surfaced
+   * as `conf X%` in the timeline metadata strip.
+   */
+  confidence?: number;
 }
 
 interface StatusMeta {
@@ -723,6 +742,9 @@ function AgentTimelineCardImpl({
   groupMode,
   winnerAgentId,
   winnerReasoning,
+  decisionRationale,
+  routingLevel,
+  confidence,
 }: AgentTimelineCardProps) {
   const [forceAllOpen, setForceAllOpen] = useState<boolean | undefined>(undefined);
   const delegateRows = useMemo(
@@ -855,6 +877,11 @@ function AgentTimelineCardImpl({
             <Users size={11} className="text-text-dim/80 shrink-0" />
           )}
           <span className="normal-case text-text/80 truncate">{headerLabel}</span>
+          {groupMode && (
+            <span className="ml-0.5 text-[10px] uppercase tracking-wide text-accent shrink-0">
+              {GROUP_MODE_LABEL[groupMode]}
+            </span>
+          )}
         </span>
         <span className="font-mono text-[10px] inline-flex items-center gap-2 normal-case tabular-nums shrink-0">
           {counts.pending > 0 && <span className="text-text-dim/80">{counts.pending} queued</span>}
@@ -897,9 +924,31 @@ function AgentTimelineCardImpl({
         </span>
       </div>
 
-      {sharedLabel && (
+      {(sharedLabel ?? decisionRationale) && (
         <div className="px-3 pt-2 pb-1.5 text-[11.5px] text-text/85 line-clamp-2 border-b border-border/20">
-          {sharedLabel}
+          {sharedLabel ?? decisionRationale}
+        </div>
+      )}
+
+      {(routingLevel !== undefined ||
+        confidence !== undefined ||
+        counts.failed > 0 ||
+        counts.skipped > 0) && (
+        <div className="px-3 py-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[10.5px] text-text-dim font-mono tabular-nums border-b border-border/20">
+          {routingLevel !== undefined && <span title="Routing level">L{routingLevel}</span>}
+          {confidence !== undefined && (
+            <span title="Confidence">conf {Math.round(confidence * 100)}%</span>
+          )}
+          {(counts.failed > 0 || counts.skipped > 0) && (
+            <span className="text-yellow/85">
+              {[
+                counts.failed > 0 ? `${counts.failed} failed` : null,
+                counts.skipped > 0 ? `${counts.skipped} skipped` : null,
+              ]
+                .filter(Boolean)
+                .join(' · ')}
+            </span>
+          )}
         </div>
       )}
 

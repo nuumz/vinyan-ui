@@ -24,6 +24,7 @@ describe('buildTurnSurfaceRenderPolicy', () => {
     expect(p.showFinalAnswer).toBe(true);
     expect(p.showProcessTimeline).toBe(false);
     expect(p.suppressDelegateOutputsInPlan).toBe(false);
+    expect(p.agentTimelineOwnsDecisionMeta).toBe(false);
   });
 
   test('single-agent workflow: stage + plan + final answer; no delegate de-dup', () => {
@@ -46,6 +47,7 @@ describe('buildTurnSurfaceRenderPolicy', () => {
     expect(p.showPlanSurface).toBe(true);
     expect(p.showFinalAnswer).toBe(true);
     expect(p.suppressDelegateOutputsInPlan).toBe(false);
+    expect(p.agentTimelineOwnsDecisionMeta).toBe(false);
   });
 
   test('multi-agent workflow: agent timeline owns delegate outputs', () => {
@@ -88,8 +90,13 @@ describe('buildTurnSurfaceRenderPolicy', () => {
       finalContent: 'synthesized',
     });
     const p = buildTurnSurfaceRenderPolicy(turn, 'live');
-    expect(p.showStageManifest).toBe(true);
+    // StageManifest is suppressed when delegate rows exist — its content
+    // (decision label, group chip, done/total, rationale, routing, conf)
+    // folds into AgentTimelineCard's header instead. Test locks in the
+    // dedup contract.
+    expect(p.showStageManifest).toBe(false);
     expect(p.showAgentTimeline).toBe(true);
+    expect(p.agentTimelineOwnsDecisionMeta).toBe(true);
     expect(p.showPlanSurface).toBe(true);
     expect(p.showFinalAnswer).toBe(true);
     expect(p.suppressDelegateOutputsInPlan).toBe(true);
@@ -116,6 +123,11 @@ describe('buildTurnSurfaceRenderPolicy', () => {
     });
     const p = buildTurnSurfaceRenderPolicy(turn, 'live');
     expect(p.showAgentTimeline).toBe(true);
+    // Single-delegate flow still flips the meta-ownership gate so the
+    // routing/conf/rationale strip lives inside AgentTimelineCard rather
+    // than in a separate StageManifest card above it.
+    expect(p.showStageManifest).toBe(false);
+    expect(p.agentTimelineOwnsDecisionMeta).toBe(true);
     expect(p.suppressDelegateOutputsInPlan).toBe(false);
   });
 
@@ -189,5 +201,8 @@ describe('buildTurnSurfaceRenderPolicy', () => {
     });
     const p = buildTurnSurfaceRenderPolicy(turn, 'live');
     expect(p.showStageManifest).toBe(true);
+    // No delegate rows → AgentTimelineCard does not render → StageManifest
+    // remains the canonical owner of decision context.
+    expect(p.agentTimelineOwnsDecisionMeta).toBe(false);
   });
 });

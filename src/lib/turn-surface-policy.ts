@@ -14,7 +14,7 @@
  *
  *   | Information type            | Owner                     | Others           |
  *   |-----------------------------|---------------------------|------------------|
- *   | post-prompt decision        | StageManifestSurface      | (none)           |
+ *   | post-prompt decision        | StageManifestSurface (non-delegate) / AgentTimelineCard (delegate) | StageManifest is suppressed when delegate rows exist; decision meta (group mode, rationale, routing, confidence) folds into the timeline header instead |
  *   | multi-agent execution       | AgentTimelineCard         | PlanSurface chip suppressed; delegate rows non-expandable |
  *   | linear plan checklist       | PlanSurface               | StageManifest does not list steps |
  *   | final synthesized answer    | FinalAnswer               | (none)           |
@@ -56,6 +56,17 @@ export interface TurnSurfaceRenderPolicy {
    * is the only place that view exists.
    */
   suppressDelegateOutputsInPlan: boolean;
+  /**
+   * True when AgentTimelineCard also owns the post-prompt decision metadata
+   * (group-mode chip, decision rationale, routing level, confidence). Set
+   * whenever AgentTimelineCard renders — the StageManifestSurface card is
+   * suppressed in delegate flows because its header (decision label, group
+   * chip, done/total) duplicates AgentTimelineCard's own header, and the
+   * remaining metadata folds into AgentTimelineCard inline. Non-delegate
+   * flows (single-agent, direct-tool, todoList-alone, full-pipeline) keep
+   * StageManifestSurface as the canonical owner.
+   */
+  agentTimelineOwnsDecisionMeta: boolean;
   /**
    * Sections to render expanded by default. Live mode keeps everything
    * collapsed (the live header carries the action; surfaces unfurl on
@@ -112,7 +123,7 @@ export function buildTurnSurfaceRenderPolicy(
       : EMPTY_SET;
 
   return {
-    showStageManifest: hasDecisionContext,
+    showStageManifest: hasDecisionContext && !hasDelegateRows,
     showAgentTimeline: hasDelegateRows,
     showPlanSurface: hasPlan,
     showCodingCli: hasCodingCli,
@@ -120,6 +131,7 @@ export function buildTurnSurfaceRenderPolicy(
     showProcessTimeline: hasProcessLog,
     showDiagnostics: hasDiagnostics,
     suppressDelegateOutputsInPlan,
+    agentTimelineOwnsDecisionMeta: hasDelegateRows,
     defaultOpenSections,
   };
 }

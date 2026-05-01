@@ -110,6 +110,9 @@ export function TurnProcessSurfaces({
           groupMode={turn.multiAgentGroupMode}
           winnerAgentId={turn.winnerAgentId}
           winnerReasoning={turn.winnerReasoning}
+          decisionRationale={turn.decisionStage?.decisionRationale}
+          routingLevel={turn.decisionStage?.routingLevel}
+          confidence={turn.decisionStage?.confidence}
         />
       )}
       {policy.showCodingCli && <CodingCliCard turn={turn} />}
