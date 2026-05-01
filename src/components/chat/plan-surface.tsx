@@ -58,7 +58,22 @@ function glyphFor(status: PlanStep['status']): StatusGlyph {
   }
 }
 
-function formatDuration(ms: number): string {
+/**
+ * Format a wall-clock duration (in milliseconds) for the plan checklist.
+ *
+ * Defense-in-depth clamp: the reducer enforces `startedAt <= finishedAt`
+ * at write time (see `use-streaming-turn.ts` `agent:plan_update` and
+ * `workflow:step_complete` handlers), so in steady state we never see a
+ * negative input here. But persisted task rows from before that fix
+ * landed — and any future invariant slip — can still hand us a
+ * negative or NaN duration. Render `0ms` rather than leak a literal
+ * `-42854ms` into the UI; the real signal lives in `step.status`.
+ *
+ * Exported so the unit test can lock the clamp behaviour without
+ * mounting React (vinyan-ui's tests are data-level only).
+ */
+export function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) ms = 0;
   if (ms < 1000) return `${ms}ms`;
   const s = ms / 1000;
   if (s < 60) return `${s.toFixed(1)}s`;

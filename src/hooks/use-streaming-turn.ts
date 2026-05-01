@@ -497,6 +497,19 @@ export interface PlanStep {
   subTaskId?: string;
 }
 
+/**
+ * Statuses considered terminal for a plan step. The reducer treats
+ * lifecycle as monotonic — once a step lands in any of these, later
+ * snapshots cannot regress it back to `pending` / `running`. Centralised
+ * so the `agent:plan_update` merge, the `task:complete` sweep, and any
+ * future status-aware code share the same definition.
+ */
+const TERMINAL_STEP_STATUSES = new Set<PlanStep['status']>([
+  'done',
+  'failed',
+  'skipped',
+]);
+
 interface StreamingTurnState {
   /** Keyed by sessionId. Only one active turn per session at a time. */
   bySession: Record<string, StreamingTurn | undefined>;
@@ -1089,15 +1102,62 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
         // Without this, every plan_update would overwrite the tool→step
         // mapping that the chat UI uses to nest tools under their step.
         const prev = turn.planSteps.find((ps) => ps.id === id);
-        const nextStatus: PlanStep['status'] = status ?? prev?.status ?? 'pending';
-        const startedAt =
+        const incomingStatus: PlanStep['status'] = status ?? prev?.status ?? 'pending';
+        // Status monotonicity: never regress a previously-terminal step
+        // (`done | failed | skipped`) back to a non-terminal one
+        // (`pending | running`). The backend can emit a stale
+        // `agent:plan_update` snapshot AFTER `task:complete` (or after
+        // `workflow:step_complete`) whose payload still carries
+        // `status: 'pending'` for a synthesizer step that was captured
+        // before it settled. Trusting the incoming status verbatim
+        // unwinds `task:complete`'s sweep and leaves the bubble
+        // incoherent — the user sees a Done task with a still-spinning
+        // synthesizer row (concrete repro: session
+        // d4aa26fa-73f1-4ad5-8b16-8727c15ee421, step 6 `-42854ms`).
+        // Once a step lands in a terminal state we treat that as
+        // authoritative; later snapshots can still update timings,
+        // outputPreview, and metadata, but not the lifecycle phase.
+        const nextStatus: PlanStep['status'] =
+          prev &&
+          TERMINAL_STEP_STATUSES.has(prev.status) &&
+          !TERMINAL_STEP_STATUSES.has(incomingStatus)
+            ? prev.status
+            : incomingStatus;
+        let startedAt =
           prev?.startedAt ??
           (nextStatus === 'running' ? event.ts || Date.now() : undefined);
-        const finishedAt =
+        let finishedAt =
           prev?.finishedAt ??
-          (nextStatus === 'done' || nextStatus === 'failed' || nextStatus === 'skipped'
-            ? event.ts || Date.now()
-            : undefined);
+          (TERMINAL_STEP_STATUSES.has(nextStatus) ? event.ts || Date.now() : undefined);
+        // Timestamp invariant — `startedAt <= finishedAt` always.
+        //
+        // Two failure modes converge here:
+        //   1. A step reached terminal status without ever having a
+        //      known `startedAt` (e.g. `workflow:step_complete`
+        //      bootstrapped the step, no prior `step_start` /
+        //      plan_update set startedAt). Without a peg, the duration
+        //      formula `finishedAt - startedAt` evaluates to `NaN`.
+        //   2. A late plan_update or out-of-order `step_start` lands a
+        //      `startedAt` that is LATER than an already-recorded
+        //      `finishedAt`. "First-seen wins" preserves the older
+        //      finishedAt; the new startedAt creeps past it and the
+        //      duration becomes negative (this is the literal
+        //      `-42854ms` the user saw in the screenshot).
+        //
+        // Both are corrected by pegging startedAt to finishedAt — the
+        // honest signal is "we observed the settle moment, can't claim
+        // a separate start", duration renders as `0`. The terminal
+        // finishedAt remains authoritative.
+        if (finishedAt !== undefined && startedAt === undefined) {
+          startedAt = finishedAt;
+        }
+        if (
+          startedAt !== undefined &&
+          finishedAt !== undefined &&
+          startedAt > finishedAt
+        ) {
+          startedAt = finishedAt;
+        }
         // Backend-supplied multi-agent metadata: prefer values from this
         // snapshot, fall back to whatever the previous snapshot or a
         // `workflow:delegate_dispatched` event already set. The
@@ -1797,20 +1857,38 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
       if (!existing) {
         // Same defense as `workflow:step_start` — bootstrap the step from
         // the complete event when the plan_update snapshot was missed.
+        // Peg `startedAt` to `finishedAt`: we never observed a separate
+        // start moment, but leaving startedAt undefined would render
+        // duration as `NaN` in the plan checklist; same value for both
+        // collapses to a non-negative `0ms` duration which is the honest
+        // representation of "we only know the settle moment".
         const strategy = typeof p.strategy === 'string' ? (p.strategy as string) : undefined;
         const newStep: PlanStep = {
           id: stepId,
           label: stepId,
           status: mapped,
           toolCallIds: [],
+          startedAt: finishedAt,
           finishedAt,
           ...(strategy ? { strategy } : {}),
         };
         return { ...turn, planSteps: [...turn.planSteps, newStep] };
       }
-      const planSteps = turn.planSteps.map((s) =>
-        s.id === stepId ? { ...s, status: mapped, finishedAt } : s,
-      );
+      const planSteps = turn.planSteps.map((s) => {
+        if (s.id !== stepId) return s;
+        // Timestamp invariant — if a prior plan_update set a
+        // `startedAt` that is now LATER than the recorded finishedAt
+        // (out-of-order events from the persisted log or batched bus),
+        // pull it back so the duration stays non-negative. Same
+        // treatment for the bootstrap-without-start case where the
+        // running plan_update never arrived but a later snapshot
+        // backfilled startedAt past the terminal moment.
+        const safeStartedAt =
+          s.startedAt !== undefined && s.startedAt <= finishedAt
+            ? s.startedAt
+            : finishedAt;
+        return { ...s, status: mapped, finishedAt, startedAt: safeStartedAt };
+      });
       return { ...turn, planSteps };
     }
     case 'workflow:step_fallback': {

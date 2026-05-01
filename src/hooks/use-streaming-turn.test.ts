@@ -169,6 +169,133 @@ describe('reduceTurn — task lifecycle', () => {
   });
 });
 
+describe('reduceTurn — plan-step status monotonicity & timestamp invariant', () => {
+  // Repros for session d4aa26fa-73f1-4ad5-8b16-8727c15ee421: a multi-agent
+  // DEBATE task that finished cleanly but the synthesizer step (step 6)
+  // rendered as still pending with a `-42854ms` duration. Two distinct
+  // bugs converged there — a stale plan_update reverting a swept terminal
+  // status, and a startedAt that landed AFTER finishedAt because of
+  // out-of-order events.
+
+  test('agent:plan_update cannot regress a step from done back to pending', () => {
+    // First snapshot lands the step in `done`. A subsequent plan_update
+    // captured BEFORE the step settled (stale snapshot, common when the
+    // executor batches plan_updates and the synth step short-circuits)
+    // arrives carrying status='pending'. Without monotonicity the bubble
+    // shows a Done task with a still-pending step — incoherent.
+    const t = fold(emptyTurn({ taskId: 't-1' }), [
+      ev('task:start', { input: { id: 't-1' } }),
+      ev('agent:plan_update', {
+        taskId: 't-1',
+        steps: [{ id: 'step6', label: 'synth', status: 'done' }],
+      }),
+      ev('agent:plan_update', {
+        taskId: 't-1',
+        steps: [{ id: 'step6', label: 'synth', status: 'pending' }],
+      }),
+    ]);
+    expect(t.planSteps[0]!.status).toBe('done');
+  });
+
+  test('agent:plan_update preserves task:complete sweep against late stale snapshot', () => {
+    // Concrete repro flow:
+    //   1. plan_update marks step6 as `pending`
+    //   2. task:complete fires with status=completed → sweep flips
+    //      step6 to `done`
+    //   3. A late plan_update (the executor's final step-state snapshot
+    //      that was captured before settle) re-asserts step6=pending
+    // Without the monotonicity guard, step 3 unwinds the sweep.
+    const t = fold(emptyTurn({ taskId: 't-1' }), [
+      ev('task:start', { input: { id: 't-1' } }),
+      ev('agent:plan_update', {
+        taskId: 't-1',
+        steps: [{ id: 'step6', label: 'synth', status: 'pending' }],
+      }),
+      ev('task:complete', {
+        result: { id: 't-1', status: 'completed', content: 'final' },
+      }),
+      ev('agent:plan_update', {
+        taskId: 't-1',
+        steps: [{ id: 'step6', label: 'synth', status: 'pending' }],
+      }),
+    ]);
+    expect(t.status).toBe('done');
+    expect(t.planSteps[0]!.status).toBe('done');
+  });
+
+  test('agent:plan_update lands directly in done — pegs startedAt to finishedAt (zero duration)', () => {
+    // No prior `running` snapshot for this step (workflow short-circuits
+    // a synth-style step). The first time we see it, status is `done`.
+    // Without the peg, startedAt would be undefined and the duration
+    // formula `finishedAt - startedAt` evaluates to NaN.
+    const t = fold(emptyTurn({ taskId: 't-1' }), [
+      ev('task:start', { input: { id: 't-1' } }),
+      ev('agent:plan_update', {
+        taskId: 't-1',
+        steps: [{ id: 'stepA', label: 'A', status: 'done' }],
+      }),
+    ]);
+    const step = t.planSteps[0]!;
+    expect(step.status).toBe('done');
+    expect(step.startedAt).toBeDefined();
+    expect(step.finishedAt).toBeDefined();
+    expect(step.startedAt).toBe(step.finishedAt!);
+  });
+
+  test('out-of-order step_complete + plan_update never produces inverted timestamps', () => {
+    // Reproduces the `-42854ms` bug:
+    //   1. workflow:step_complete bootstraps step6 with finishedAt = T0
+    //      (no prior plan_update or step_start)
+    //   2. A late plan_update arrives carrying step6 still in a pre-
+    //      settle state — the reducer would otherwise leave finishedAt
+    //      at T0 (first-seen wins) but newly assign startedAt = T1 > T0
+    //      from the running fallback, locking in startedAt > finishedAt.
+    const t = fold(emptyTurn({ taskId: 't-1' }), [
+      ev('task:start', { input: { id: 't-1' } }),
+      ev('workflow:step_complete', {
+        taskId: 't-1',
+        stepId: 'step6',
+        status: 'completed',
+      }),
+      ev('agent:plan_update', {
+        taskId: 't-1',
+        steps: [{ id: 'step6', label: 'synth', status: 'running' }],
+      }),
+    ]);
+    const step = t.planSteps.find((s) => s.id === 'step6')!;
+    // Status stays terminal — monotonicity guard refuses the regression.
+    expect(step.status).toBe('done');
+    // Timestamps are coherent: startedAt <= finishedAt.
+    expect(step.startedAt).toBeDefined();
+    expect(step.finishedAt).toBeDefined();
+    expect(step.startedAt!).toBeLessThanOrEqual(step.finishedAt!);
+    // The duration formula used by plan-surface produces a non-negative
+    // value (the user-visible defect was specifically the negative one).
+    expect(step.finishedAt! - step.startedAt!).toBeGreaterThanOrEqual(0);
+  });
+
+  test('workflow:step_complete bootstrap pins startedAt to finishedAt', () => {
+    // When a step is created entirely from a `workflow:step_complete`
+    // event (no prior plan_update or step_start), the bootstrap row
+    // must carry both timestamps to keep duration math valid. The
+    // honest signal is "settled at T, separate start unknown" → render
+    // as 0 rather than NaN.
+    const t = fold(emptyTurn({ taskId: 't-1' }), [
+      ev('task:start', { input: { id: 't-1' } }),
+      ev('workflow:step_complete', {
+        taskId: 't-1',
+        stepId: 'orphan-step',
+        status: 'completed',
+      }),
+    ]);
+    const step = t.planSteps.find((s) => s.id === 'orphan-step')!;
+    expect(step.status).toBe('done');
+    expect(step.startedAt).toBeDefined();
+    expect(step.finishedAt).toBeDefined();
+    expect(step.startedAt).toBe(step.finishedAt!);
+  });
+});
+
 describe('reduceTurn — phase advancement', () => {
   test('phase:timing advances currentPhase to the NEXT phase, not the completed one', () => {
     const t = reduceTurn(emptyTurn(), ev('phase:timing', { phase: 'perceive', durationMs: 50 }));

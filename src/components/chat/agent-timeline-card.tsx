@@ -427,7 +427,23 @@ function DelegateRow({
         ? formatDuration(Math.max(0, nowMs - step.startedAt))
         : null;
 
-  const hasFinalOutput = !!step.outputPreview && step.outputPreview.trim().length > 0;
+  // Output preview can land on either the PlanStep (via
+  // `workflow:delegate_completed`) or the MultiAgentSubtask manifest (via
+  // `workflow:subtask_updated`). The two events are emitted in pairs by
+  // the workflow-executor, but persist independently — a replay that
+  // dropped one (e.g. an event row whose `session_id=NULL` got filtered
+  // out by the task-tree query) can still surface the answer through the
+  // surviving channel. Falling back keeps the delegate's captured output
+  // visible instead of collapsing to "[no activity captured]" when the
+  // data is one redundant write away.
+  const effectiveOutputPreview =
+    (step.outputPreview && step.outputPreview.trim().length > 0
+      ? step.outputPreview
+      : undefined) ??
+    (subtask?.outputPreview && subtask.outputPreview.trim().length > 0
+      ? subtask.outputPreview
+      : undefined);
+  const hasFinalOutput = !!effectiveOutputPreview;
   const hasEvents = events.length > 0;
   const hasManifestDetail =
     showManifestDetail &&
@@ -567,7 +583,7 @@ function DelegateRow({
           ) : step.status === 'running' ? (
             <div className="italic text-text-dim text-[11px]">Waiting for first tool call…</div>
           ) : null}
-          {hasFinalOutput && <FinalAnswerDisclosure text={step.outputPreview ?? ''} />}
+          {hasFinalOutput && <FinalAnswerDisclosure text={effectiveOutputPreview ?? ''} />}
           {step.status === 'failed' && !hasFinalOutput && (
             <div className="rounded border border-red/25 bg-red/5 p-2 text-red/90 space-y-1">
               <div className="text-[10.5px] uppercase tracking-wide font-medium">
@@ -580,13 +596,34 @@ function DelegateRow({
                   Agent {resolveAgentLabel(step, subtask)} reported failure with no captured output.
                 </div>
               )}
-              {subtask?.partialOutputAvailable && step.outputPreview && (
-                <FinalAnswerDisclosure text={step.outputPreview} />
+              {subtask?.partialOutputAvailable && effectiveOutputPreview && (
+                <FinalAnswerDisclosure text={effectiveOutputPreview} />
               )}
             </div>
           )}
           {!hasEvents && !hasFinalOutput && step.status !== 'running' && step.status !== 'failed' && (
-            <div className="italic text-text-dim">[no activity captured]</div>
+            // No tool calls AND no captured preview from either channel.
+            // Two real-world causes converge here:
+            //
+            //  1. Reasoning-only persona — writer / reviewer / mentor that
+            //     answered straight from the LLM with zero tool calls. The
+            //     synthesized final answer above carries their contribution;
+            //     "[no activity captured]" was misleading because plenty of
+            //     activity *did* happen, just not at the tool layer.
+            //  2. Replay data loss — a delegate's events landed in the DB
+            //     with `session_id=NULL` (recorder race fixed in the backend
+            //     pre-seed) and the task-tree query filtered them out. The
+            //     recorder fix prevents new runs from hitting this; existing
+            //     persisted rows keep the honest message below.
+            //
+            // Pointing the user at where the answer actually lives is more
+            // useful than a literal "no activity" claim that contradicts the
+            // DONE status and the elapsed duration on the same row.
+            <div className="italic text-text-dim text-[11px] leading-relaxed">
+              Reasoning-only delegate — final answer captured in the
+              synthesized response above. No tool calls were recorded for
+              this step.
+            </div>
           )}
         </div>
       )}
