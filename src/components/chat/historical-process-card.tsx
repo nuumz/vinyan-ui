@@ -19,7 +19,9 @@
  */
 import { useMemo } from 'react';
 import { useTaskEvents } from '@/hooks/use-task-events';
+import { useTaskProcessState } from '@/hooks/use-task-process-state';
 import {
+  fromBackendCompleteness,
   normalizeReplayedTurnForDisplay,
   replayCompleteness,
 } from '@/lib/replay-completeness';
@@ -46,18 +48,28 @@ function CardShell({ children }: { children: React.ReactNode }) {
 
 export function HistoricalProcessCard({ taskId }: HistoricalProcessCardProps) {
   const { turn, events, isLoading, error, unsupported } = useTaskEvents(taskId, { enabled: true });
+  // Backend-authoritative process projection. The projection is the
+  // single source of truth for completeness — when it lands we drop
+  // the local classifier and render the backend's verdict. The local
+  // classifier remains as a fallback for the brief window before the
+  // projection arrives, and for environments that 404 the new endpoint
+  // (older agents not yet redeployed).
+  const projection = useTaskProcessState(taskId, { enabled: true });
 
-  // Classify the persisted log honestly. Done first so loading / error /
-  // unsupported / empty states fall through to the banner with the matching
-  // tone instead of collapsing to a single "no events" string.
-  const completeness = useMemo(
-    () =>
-      replayCompleteness(events ?? [], {
-        unsupported,
-        error: !!error && !unsupported,
-      }),
-    [events, unsupported, error],
-  );
+  // Classify the persisted log honestly. Backend projection wins; local
+  // classifier is a fallback only.
+  const completeness = useMemo(() => {
+    if (projection.data?.completeness) {
+      return fromBackendCompleteness(
+        projection.data.completeness,
+        projection.data.lifecycle.terminalEventType,
+      );
+    }
+    return replayCompleteness(events ?? [], {
+      unsupported,
+      error: !!error && !unsupported,
+    });
+  }, [projection.data, events, unsupported, error]);
 
   if (isLoading) {
     return (

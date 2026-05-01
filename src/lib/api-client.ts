@@ -158,15 +158,18 @@ export interface TaskDetailResponse {
     requestedAt: number;
   };
   /**
-   * Authoritative gate state derived from the persisted event log —
-   * mirrors the row-level needs-action signal but always queryable per
-   * task. Use this in the drawer to confirm the gate badge is still
-   * actionable.
+   * Authoritative gate state derived from the persisted event log +
+   * durable approval rows — mirrors the row-level needs-action signal
+   * but always queryable per task. Use this in the drawer to confirm
+   * the gate badge is still actionable. `codingCliApproval` is sourced
+   * from `coding_cli_approvals` (durable row), NOT folded from raw
+   * `coding-cli:*` events on the client.
    */
   pendingGates?: {
     partialDecision: boolean;
     humanInput: boolean;
     approval: boolean;
+    codingCliApproval?: boolean;
   };
   codingCli?: unknown[];
   eventHistory: {
@@ -174,6 +177,199 @@ export interface TaskDetailResponse {
     eventCount?: number;
   };
   sessionSource?: string;
+}
+
+// ── Backend-authoritative process projection (mirror of
+// `vinyan-agent/src/api/projections/task-process-projection.ts`).
+// Frontend uses these as the single source of truth for lifecycle /
+// gates / plan / coding-cli / diagnostics — no client-side reducer
+// reconstructs the same fields from raw events. ────────────────────
+
+export type TaskLifecycleStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'escalated'
+  | 'timeout'
+  | 'cancelled'
+  | 'input-required';
+
+export interface TaskProcessLifecycle {
+  taskId: string;
+  sessionId?: string;
+  status: TaskLifecycleStatus;
+  dbStatus?: string;
+  resultStatus?: string;
+  startedAt?: number;
+  updatedAt?: number;
+  finishedAt?: number;
+  durationMs?: number;
+  terminalEventType?: string;
+  terminalReason?: string;
+}
+
+export type TaskProcessCompletenessKind =
+  | 'complete'
+  | 'terminal-error'
+  | 'missing-terminal'
+  | 'awaiting-user'
+  | 'empty'
+  | 'unsupported'
+  | 'error';
+
+export interface TaskProcessCompleteness {
+  kind: TaskProcessCompletenessKind;
+  eventCount: number;
+  firstTs?: number;
+  lastTs?: number;
+  truncated: boolean;
+  reason?: string;
+}
+
+export interface TaskProcessGate {
+  open: boolean;
+  resolved: boolean;
+  openedAt?: number;
+  resolvedAt?: number;
+  openedEventId?: string;
+  resolvedEventId?: string;
+  detail?: Record<string, unknown>;
+}
+
+export interface TaskProcessGates {
+  approval: TaskProcessGate;
+  workflowHumanInput: TaskProcessGate;
+  partialDecision: TaskProcessGate;
+  codingCliApproval: TaskProcessGate;
+}
+
+export interface TaskProcessTodoItem {
+  id: string;
+  content: string;
+  status: string;
+  activeForm?: string;
+}
+
+export interface TaskProcessPlanStep {
+  id: string;
+  description: string;
+  strategy?: string;
+  status: string;
+  agentId?: string;
+  subTaskId?: string;
+  startedAt?: number;
+  finishedAt?: number;
+  fallbackUsed?: boolean;
+}
+
+export interface TaskProcessSubtask {
+  subtaskId: string;
+  stepId: string;
+  status: string;
+  agentId?: string;
+  startedAt?: number;
+  completedAt?: number;
+  errorKind?: string;
+  errorMessage?: string;
+  outputPreview?: string;
+}
+
+export interface TaskProcessPlan {
+  decisionStage?: string;
+  todoList: TaskProcessTodoItem[];
+  steps: TaskProcessPlanStep[];
+  multiAgentSubtasks: TaskProcessSubtask[];
+  groupMode?: string;
+  winner?: { agentId?: string; reasoning?: string; runnerUpAgentId?: string };
+}
+
+export interface TaskProcessCodingCliPendingApproval {
+  requestId: string;
+  command: string;
+  reason: string;
+  policyDecision: string;
+  requestedAt: number;
+}
+
+export interface TaskProcessCodingCliResolvedApproval {
+  requestId: string;
+  command: string;
+  policyDecision: string;
+  humanDecision: string;
+  decidedBy: string;
+  decidedAt: number;
+  requestedAt: number;
+}
+
+export interface TaskProcessCodingCliSession {
+  id: string;
+  taskId: string;
+  providerId: string;
+  state: string;
+  startedAt: number;
+  updatedAt: number;
+  endedAt?: number;
+  filesChanged: string[];
+  commandsRequested: string[];
+  pendingApprovals: TaskProcessCodingCliPendingApproval[];
+  resolvedApprovals: TaskProcessCodingCliResolvedApproval[];
+  finalResult?: unknown;
+}
+
+export interface TaskProcessPhase {
+  name: string;
+  status: string;
+  startedAt: number;
+  finishedAt?: number;
+  durationMs?: number;
+}
+
+export interface TaskProcessToolCall {
+  callId: string;
+  tool: string;
+  status: string;
+  ts: number;
+  outputPreview?: string;
+}
+
+export interface TaskProcessOracleVerdict {
+  oracle: string;
+  verdict: string;
+  confidence?: number;
+  ts: number;
+}
+
+export interface TaskProcessEscalation {
+  fromLevel?: number;
+  toLevel?: number;
+  reason?: string;
+  ts: number;
+}
+
+export interface TaskProcessDiagnostics {
+  phases: TaskProcessPhase[];
+  toolCalls: TaskProcessToolCall[];
+  oracleVerdicts: TaskProcessOracleVerdict[];
+  routingLevel?: number;
+  escalations: TaskProcessEscalation[];
+}
+
+export interface TaskProcessHistory {
+  lastSeq: number;
+  eventCount: number;
+  truncated: boolean;
+  descendantTaskIds: string[];
+}
+
+export interface TaskProcessProjection {
+  lifecycle: TaskProcessLifecycle;
+  completeness: TaskProcessCompleteness;
+  gates: TaskProcessGates;
+  plan: TaskProcessPlan;
+  codingCliSessions: TaskProcessCodingCliSession[];
+  diagnostics: TaskProcessDiagnostics;
+  history: TaskProcessHistory;
 }
 
 export interface PendingApproval {
@@ -1632,6 +1828,19 @@ export const api = {
       truncated?: boolean;
     }>(`/tasks/${encodeURIComponent(taskId)}/event-history${qs ? `?${qs}` : ''}`);
   },
+
+  /**
+   * Backend-authoritative process projection for a task. Use this — not
+   * raw `/event-history` — to render lifecycle / gate / plan / coding-cli
+   * state in the UI. The backend folds the durable event log + approval
+   * ledger + coding-cli store into a single canonical projection so the
+   * client stays a thin renderer (no client-side reducers reconstructing
+   * canonical state).
+   *
+   * Returns 404 when the task is unknown to every backing store.
+   */
+  getTaskProcessState: (taskId: string) =>
+    fetchJSON<TaskProcessProjection>(`/tasks/${encodeURIComponent(taskId)}/process-state`),
 
   // Approval (A6)
   getPendingApprovals: () => fetchJSON<{ pending: PendingApproval[] }>('/approvals'),

@@ -1,18 +1,24 @@
 /**
- * Replay completeness — classifies the persisted bus event log for a past
- * task so the historical UI can tell the user whether what they are
- * looking at is the *whole* task or only the events that happened to be
- * recorded. Replaces the previous "force everything to done" hack which
- * silently lied when the log was truncated, the recorder dropped events,
- * or the task ran before the recorder existed.
+ * Replay completeness — classifier + display adapter.
  *
- * Pure function — input is the raw event list returned by the events API
- * (already curated against `event-manifest.ts`). Output is a small
- * descriptor consumed by `<ReplayCompletenessBanner>` and
- * `normalizeReplayedTurnForDisplay`.
+ * **Authoritative source is the backend** projection at
+ * `GET /api/v1/tasks/:id/process-state` (see
+ * `src/api/projections/task-process-projection.ts` in vinyan-agent).
+ * Use `fromBackendCompleteness(projection.completeness)` whenever the
+ * projection is available; the local `replayCompleteness(...)` classifier
+ * remains ONLY as a fallback for two narrow surfaces:
+ *
+ *   1. Live SSE before the first `/process-state` reconcile lands.
+ *   2. Tests / dev tools that want to classify a hand-rolled event list
+ *      without spinning up the backend.
+ *
+ * Frontend MUST NOT use the local classifier as the primary signal in any
+ * production render path. If you find yourself reaching for it from a UI
+ * component, fetch the backend projection instead.
  *
  * No backend round-trips here; classification is rule-based on event types.
  */
+import type { TaskProcessCompleteness, TaskProcessCompletenessKind } from './api-client';
 
 export type ReplayCompletenessKind =
   /** `task:complete` arrived and the reducer settled to `done`. */
@@ -178,4 +184,32 @@ export function replayCompleteness(
  */
 export function normalizeReplayedTurnForDisplay<T>(turn: T, _completeness: ReplayCompleteness): T {
   return turn;
+}
+
+/**
+ * Display adapter — convert the backend projection's completeness object
+ * into the local `ReplayCompleteness` shape the UI banners already
+ * understand. This is the preferred way to populate the banner: the
+ * backend has full visibility into the durable event log + approval
+ * ledger + coding-cli rows, so its classification beats anything the
+ * frontend can reconstruct.
+ *
+ * Maps the canonical `TaskProcessCompletenessKind` (which is the same
+ * enum) and copies the count + timestamps verbatim. The local
+ * `replayCompleteness` is a fallback only when the projection is absent.
+ */
+export function fromBackendCompleteness(
+  c: TaskProcessCompleteness,
+  /** Optional terminal event type from the projection's lifecycle for richer banner copy. */
+  terminalEventType?: string,
+): ReplayCompleteness {
+  const kind: ReplayCompletenessKind = (c.kind satisfies TaskProcessCompletenessKind) as ReplayCompletenessKind;
+  const out: ReplayCompleteness = {
+    kind,
+    eventCount: c.eventCount,
+  };
+  if (typeof c.firstTs === 'number') out.firstTs = c.firstTs;
+  if (typeof c.lastTs === 'number') out.lastTs = c.lastTs;
+  if (terminalEventType) out.terminalEventType = terminalEventType;
+  return out;
 }
