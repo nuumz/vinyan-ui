@@ -62,6 +62,14 @@ function extractCodeChild(children: ReactNode): ReactElement<CodeElementProps> |
 interface MarkdownProps {
   content: string;
   className?: string;
+  /**
+   * When true, render a streaming caret at the end of the *last text-bearing
+   * block* of the rendered markdown via the `prose-chat--streaming` CSS rule
+   * (see `index.css`). Toggle this with `useStreamingActivity` so the caret
+   * only shows while characters are actively landing — not throughout the
+   * whole `running` window. Idle / settled streams set this back to false.
+   */
+  streaming?: boolean;
 }
 
 /**
@@ -69,9 +77,12 @@ interface MarkdownProps {
  * for fenced code blocks, and a copy button on each block. Intentionally
  * applied only to assistant content — user input stays plain text.
  */
-export const Markdown = memo(function Markdown({ content, className }: MarkdownProps) {
+export const Markdown = memo(function Markdown({ content, className, streaming }: MarkdownProps) {
   return (
-    <div className={cn('prose-chat', className)}>
+    <div
+      className={cn('prose-chat', streaming && 'prose-chat--streaming', className)}
+      data-streaming={streaming ? 'true' : undefined}
+    >
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeHighlight]}

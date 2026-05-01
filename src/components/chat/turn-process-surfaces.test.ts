@@ -126,15 +126,22 @@ describe('historical replay parity — multi-agent run', () => {
 
     // Surface visibility — StageManifest is suppressed for delegate flows
     // (decision label, group chip, done/total, rationale, routing/conf
-    // fold into AgentTimelineCard's header instead). The default-open hint
-    // for stageManifest is moot in this case; AgentTimelineCard renders
-    // the metadata inline without a click.
+    // fold into AgentTimelineCard's header instead). FinalAnswer is also
+    // suppressed in historical mode because MessageBubble already renders
+    // `message.content` outside of TurnProcessSurfaces — leaving it on
+    // would duplicate the same markdown twice in one bubble.
     expect(policy.showStageManifest).toBe(false);
     expect(policy.agentTimelineOwnsDecisionMeta).toBe(true);
     expect(policy.showAgentTimeline).toBe(true);
     expect(policy.showPlanSurface).toBe(true);
-    expect(policy.showFinalAnswer).toBe(true);
+    expect(policy.showFinalAnswer).toBe(false);
     expect(policy.suppressDelegateOutputsInPlan).toBe(true);
+
+    // Live mode of the same reduced turn keeps FinalAnswer on — that's where
+    // the streaming caret lives and where there is no MessageBubble sibling
+    // rendering the markdown for us.
+    const livePolicy = buildTurnSurfaceRenderPolicy(turn, 'live');
+    expect(livePolicy.showFinalAnswer).toBe(true);
 
     // Stage manifest decision is preserved
     expect(turn.decisionStage?.decisionKind).toBe('multi-agent');

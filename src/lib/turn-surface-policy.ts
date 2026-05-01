@@ -122,12 +122,21 @@ export function buildTurnSurfaceRenderPolicy(
       ? new Set<TurnSurfaceSection>(hasDecisionContext ? ['stageManifest'] : [])
       : EMPTY_SET;
 
+  // FinalAnswer is the live-mode home for the streaming markdown answer.
+  // In historical mode the user-visible reply is already rendered by
+  // `MessageBubble.content` *outside* of `TurnProcessSurfaces`, so emitting
+  // FinalAnswer inside `HistoricalProcessCard` would duplicate the same
+  // markdown twice in one bubble. Live mode has no MessageBubble for the
+  // in-flight turn, so FinalAnswer remains the canonical owner there
+  // (and carries the streaming caret).
+  const showFinalAnswer = hasFinalAnswer && mode === 'live';
+
   return {
     showStageManifest: hasDecisionContext && !hasDelegateRows,
     showAgentTimeline: hasDelegateRows,
     showPlanSurface: hasPlan,
     showCodingCli: hasCodingCli,
-    showFinalAnswer: hasFinalAnswer,
+    showFinalAnswer,
     showProcessTimeline: hasProcessLog,
     showDiagnostics: hasDiagnostics,
     suppressDelegateOutputsInPlan,

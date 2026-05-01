@@ -27,6 +27,15 @@ describe('buildTurnSurfaceRenderPolicy', () => {
     expect(p.agentTimelineOwnsDecisionMeta).toBe(false);
   });
 
+  test('conversational reply (historical mode): MessageBubble owns the markdown — FinalAnswer suppressed', () => {
+    // Historical replays render `message.content` via MessageBubble outside
+    // TurnProcessSurfaces, so an inline FinalAnswer card would render the
+    // same markdown twice in one bubble. The policy guards against this.
+    const turn = turnWith({ finalContent: 'hi' });
+    const p = buildTurnSurfaceRenderPolicy(turn, 'historical');
+    expect(p.showFinalAnswer).toBe(false);
+  });
+
   test('single-agent workflow: stage + plan + final answer; no delegate de-dup', () => {
     const turn = turnWith({
       decisionStage: {

@@ -132,3 +132,51 @@ body {
   vertical-align: -0.15em;
   animation: live-writing-caret 1.05s ease-in-out infinite;
 }
+
+/*
+ * Streaming caret for the assistant's markdown answer.
+ *
+ * The caret is rendered as a `::after` pseudo-element on the last
+ * text-bearing descendant of `.prose-chat--streaming` so it sits inline
+ * at the end of the actual text rather than floating in a new block under
+ * the markdown body. Coverage targets the last child paragraph / heading /
+ * list item / blockquote — the cases where mid-stream content typically
+ * lands. Code fences (`<pre>`) and tables intentionally do NOT receive a
+ * caret: the user can already see the new chars filling the block, and a
+ * caret outside the fence would visually drift away from the latest text.
+ *
+ * Animation reuses the existing `live-writing-caret` keyframes so the
+ * caret matches the rest of the chat's pulse cadence. Honors the
+ * `prefers-reduced-motion` media query — caret stays visible but does not
+ * blink, keeping the visual cue without strobing.
+ */
+.prose-chat--streaming > p:last-child::after,
+.prose-chat--streaming > h3:last-child::after,
+.prose-chat--streaming > h4:last-child::after,
+.prose-chat--streaming > h5:last-child::after,
+.prose-chat--streaming > blockquote:last-child > p:last-child::after,
+.prose-chat--streaming > ul:last-child > li:last-child::after,
+.prose-chat--streaming > ol:last-child > li:last-child::after {
+  content: '';
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 3px;
+  border-radius: 999px;
+  background: var(--color-accent);
+  vertical-align: -0.15em;
+  animation: live-writing-caret 1.05s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .prose-chat--streaming > p:last-child::after,
+  .prose-chat--streaming > h3:last-child::after,
+  .prose-chat--streaming > h4:last-child::after,
+  .prose-chat--streaming > h5:last-child::after,
+  .prose-chat--streaming > blockquote:last-child > p:last-child::after,
+  .prose-chat--streaming > ul:last-child > li:last-child::after,
+  .prose-chat--streaming > ol:last-child > li:last-child::after {
+    animation: none;
+    opacity: 0.85;
+  }
+}
