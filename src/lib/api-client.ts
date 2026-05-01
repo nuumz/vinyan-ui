@@ -1299,6 +1299,59 @@ export interface SkillProposal {
   decidedAt: number | null;
   decidedBy: string | null;
   decisionReason: string | null;
+  /**
+   * Latest revision number for this proposal (G2-extension). The
+   * editor hands this back as `expectedRevision` for optimistic
+   * locking — it ships with the proposal entity so there's no race
+   * window where revisions hasn't loaded yet.
+   */
+  latestRevision: number;
+}
+
+/** R2: SKILL.md draft revision audit-trail row. */
+export interface SkillProposalRevision {
+  id: number;
+  profile: string;
+  proposalId: string;
+  revision: number;
+  skillMd: string;
+  safetyFlags: ReadonlyArray<string>;
+  actor: string;
+  reason: string | null;
+  createdAt: number;
+}
+
+/** R1 diagnostics payload — what `/autogen-policy` returns. */
+export interface AutogenPolicySnapshotResponse {
+  profile: string;
+  threshold: number | null;
+  enabled: boolean;
+  explanation: string | null;
+  signals: {
+    pendingCount: number;
+    acceptanceRate: number;
+    quarantineRate: number;
+    totalCreated: number;
+    totalDecided: number;
+    totalQuarantined: number;
+  } | null;
+  computedAt: number;
+  ledger: {
+    recentChanges: number;
+    history: Array<{
+      id: number;
+      ts: number;
+      oldValue: unknown;
+      newValue: unknown;
+      reason: string;
+      ownerModule: string;
+    }>;
+  };
+  tracker: {
+    rows: number;
+    cooldownActive: number;
+    bootId: string | null;
+  };
 }
 
 // ── Endpoints ──────────────────────────────────────────
@@ -1842,7 +1895,7 @@ export const api = {
   },
   getSkillProposal: (id: string) =>
     fetchJSON<{ proposal: SkillProposal }>(`/skill-proposals/${encodeURIComponent(id)}`),
-  approveSkillProposal: (id: string, body: { decidedBy: string; reason?: string }) =>
+  approveSkillProposal: (id: string, body: { decidedBy: string; reason: string }) =>
     fetchJSON<{ proposal: SkillProposal }>(`/skill-proposals/${encodeURIComponent(id)}/approve`, {
       method: 'POST',
       body: JSON.stringify(body),
@@ -1852,7 +1905,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
-  setSkillProposalTrustTier: (id: string, body: { tier: string; decidedBy: string }) =>
+  setSkillProposalTrustTier: (id: string, body: { tier: string; decidedBy: string; reason: string }) =>
     fetchJSON<{ proposal: SkillProposal; decidedBy: string }>(
       `/skill-proposals/${encodeURIComponent(id)}/trust-tier`,
       { method: 'POST', body: JSON.stringify(body) },
@@ -1862,6 +1915,46 @@ export const api = {
       `/skill-proposals/${encodeURIComponent(id)}`,
       { method: 'DELETE' },
     ),
+  /**
+   * Live safety-scan preview. R2: pure scanner, no DB writes; the
+   * editor calls this on a debounced timer as the operator types.
+   */
+  scanSkillProposalDraft: (skillMd: string) =>
+    fetchJSON<{ safe: boolean; flags: string[]; scannedAt: number }>(`/skill-proposals/scan`, {
+      method: 'POST',
+      body: JSON.stringify({ skillMd }),
+    }),
+  /**
+   * Persist an edited SKILL.md draft. Returns the updated proposal +
+   * the revision number. Status flips between `pending` and
+   * `quarantined` based on the safety verdict applied to the new
+   * bytes.
+   */
+  patchSkillProposalDraft: (
+    id: string,
+    body: {
+      skillMd: string;
+      actor: string;
+      reason?: string;
+      /** G2 optimistic-locking expectation — current revision the operator was viewing. */
+      expectedRevision?: number;
+    },
+  ) =>
+    fetchJSON<{ proposal: SkillProposal; revision: number }>(
+      `/skill-proposals/${encodeURIComponent(id)}/draft`,
+      { method: 'PATCH', body: JSON.stringify(body) },
+    ),
+  /** R2 audit trail — list proposal revisions newest-first. */
+  getSkillProposalRevisions: (id: string, limit = 50) =>
+    fetchJSON<{ revisions: SkillProposalRevision[]; total: number }>(
+      `/skill-proposals/${encodeURIComponent(id)}/revisions?limit=${limit}`,
+    ),
+  /**
+   * R1 diagnostics — surfaces the live adaptive threshold, signals
+   * that drove it, and the ledger tail.
+   */
+  getAutogenPolicySnapshot: () =>
+    fetchJSON<AutogenPolicySnapshotResponse>(`/skill-proposals/autogen-policy`),
 
   /**
    * Send a message using SSE streaming. Returns an async generator that

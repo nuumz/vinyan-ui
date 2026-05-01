@@ -149,6 +149,13 @@ export type MultiAgentSubtaskErrorKind =
   | 'contract_violation'
   | 'dependency_failed'
   | 'subtask_failed'
+  // Q1 — backend's permanent failure marker for "delegate dispatch
+  // infrastructure not wired" (executeTask missing, registry empty).
+  // Surfaces in the persisted event log as a `workflow:delegate_failed`
+  // payload's `errorClass`. Treated like the other unknown / failed
+  // kinds in the UI today; kept in the union so the type narrows
+  // exhaustively when consumers add a switch.
+  | 'infrastructure_unavailable'
   | 'unknown';
 
 export interface MultiAgentSubtaskView {
