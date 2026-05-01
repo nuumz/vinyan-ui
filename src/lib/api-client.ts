@@ -34,12 +34,146 @@ export interface SystemMetrics {
   };
 }
 
-export interface Task {
+/**
+ * Coarse classification used by the operations console "Needs action"
+ * column. Backend-derived from durable signals only — never inferred
+ * from display text. Mirrors the union in `src/api/server.ts`.
+ */
+export type TaskNeedsActionType =
+  | 'none'
+  | 'approval'
+  | 'workflow-human-input'
+  | 'partial-decision'
+  | 'coding-cli-approval'
+  | 'stale-running'
+  | 'failed'
+  | 'timeout';
+
+/**
+ * Rich task summary returned by `GET /api/v1/tasks`. Backwards compat:
+ * the legacy `Task` alias remains so older call-sites keep compiling.
+ */
+export interface TaskSummary {
   taskId: string;
-  status: string;
   sessionId?: string;
+  parentTaskId?: string;
   goal?: string;
+  /**
+   * Projected status — preserves `escalated`, `uncertain`, `partial`,
+   * `input-required`, `cancelled`, `timeout` from the underlying
+   * `TaskResult.status` instead of collapsing everything non-completed
+   * to `failed`.
+   */
+  status: string;
+  dbStatus?: string;
+  resultStatus?: string;
+  createdAt: number;
+  updatedAt: number;
+  durationMs?: number;
+  routingLevel?: number;
+  approach?: string;
+  modelUsed?: string;
+  workerId?: string | null;
+  tokensConsumed?: number;
+  qualityScore?: number;
+  affectedFiles?: string[];
+  errorSummary?: string;
+  needsAction: boolean;
+  needsActionType: TaskNeedsActionType;
+  retryOf?: string;
+  retryChildren?: string[];
+  hasEventHistory: boolean;
+  sessionSource?: string;
+  archivedAt?: number | null;
   result?: TaskResult;
+}
+
+/** Backwards-compat alias for callers still consuming the old shape. */
+export type Task = TaskSummary;
+
+/** Aggregate counts returned alongside the filtered list response. */
+export interface TaskCounts {
+  byDbStatus: Record<string, number>;
+  byStatus: Record<string, number>;
+  byNeedsAction: Record<string, number>;
+  needsActionTotal: number;
+}
+
+export interface ListTasksParams {
+  limit?: number;
+  offset?: number;
+  status?: string | string[];
+  sessionId?: string;
+  source?: 'ui' | 'api' | 'all';
+  search?: string;
+  approach?: string;
+  routingLevel?: number;
+  needsAction?: TaskNeedsActionType | 'any';
+  hasError?: boolean;
+  from?: number;
+  to?: number;
+  sort?: 'created-desc' | 'created-asc' | 'updated-desc' | 'updated-asc';
+  visibility?: 'active' | 'archived' | 'all';
+}
+
+export interface ListTasksResponse {
+  tasks: TaskSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+  counts: TaskCounts;
+}
+
+export interface TaskDetailResponse {
+  taskId: string;
+  sessionId?: string;
+  status: string;
+  resultStatus?: string;
+  goal?: string;
+  taskInput?: {
+    id: string;
+    goal: string;
+    taskType?: string;
+    targetFiles?: string[];
+    constraints?: string[];
+    budget?: { maxTokens: number; maxDurationMs: number; maxRetries: number };
+    parentTaskId?: string;
+  };
+  result?: TaskResult;
+  trace?: TaskResult['trace'];
+  mutations: TaskResult['mutations'];
+  qualityScore?: TaskResult['qualityScore'];
+  lifecycle: {
+    createdAt?: number;
+    updatedAt?: number;
+    archivedAt?: number | null;
+  };
+  lineage: {
+    parentTaskId?: string;
+    retryChildren: string[];
+  };
+  pendingApproval?: {
+    riskScore: number;
+    reason: string;
+    requestedAt: number;
+  };
+  /**
+   * Authoritative gate state derived from the persisted event log —
+   * mirrors the row-level needs-action signal but always queryable per
+   * task. Use this in the drawer to confirm the gate badge is still
+   * actionable.
+   */
+  pendingGates?: {
+    partialDecision: boolean;
+    humanInput: boolean;
+    approval: boolean;
+  };
+  codingCli?: unknown[];
+  eventHistory: {
+    recorder: boolean;
+    eventCount?: number;
+  };
+  sessionSource?: string;
 }
 
 export interface PendingApproval {
@@ -1111,6 +1245,62 @@ async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
   throw lastError ?? new Error(`Failed after ${MAX_RETRIES + 1} attempts: ${path}`);
 }
 
+// ── Scheduler types (mirror src/api/server.ts:projectScheduleJob) ─────
+
+/** Wire shape of a scheduled job in the operations console. */
+export interface ScheduledJob {
+  id: string;
+  profile: string;
+  cron: string;
+  timezone: string;
+  goal: string;
+  /** `'active' | 'paused' | 'expired' | 'failed-circuit'`. */
+  status: string;
+  nextFireAt: number | null;
+  failureStreak: number;
+  createdAt: number;
+  nlOriginal: string;
+  origin: { platform: string; chatId: string | null; threadKey?: string };
+  constraintKeys: string[];
+  runCount: number;
+  lastRun: { ranAt: number; taskId: string; outcome: string } | null;
+}
+
+export interface CreateScheduledJobBody {
+  goal: string;
+  /** Either a literal cron expression OR a natural-language phrase. */
+  cron?: string;
+  nl?: string;
+  timezone?: string;
+  constraints?: Record<string, unknown>;
+  profile?: string;
+}
+
+// ── Skill proposal types (mirror src/db/skill-proposal-store.ts) ──────
+
+export type SkillProposalStatus = 'pending' | 'approved' | 'rejected' | 'quarantined';
+export type SkillProposalTrust = 'quarantined' | 'community' | 'trusted' | 'official' | 'builtin';
+
+export interface SkillProposal {
+  id: string;
+  profile: string;
+  status: SkillProposalStatus;
+  proposedName: string;
+  proposedCategory: string;
+  skillMd: string;
+  capabilityTags: ReadonlyArray<string>;
+  toolsRequired: ReadonlyArray<string>;
+  sourceTaskIds: ReadonlyArray<string>;
+  evidenceEventIds: ReadonlyArray<string>;
+  successCount: number;
+  safetyFlags: ReadonlyArray<string>;
+  trustTier: SkillProposalTrust;
+  createdAt: number;
+  decidedAt: number | null;
+  decidedBy: string | null;
+  decisionReason: string | null;
+}
+
 // ── Endpoints ──────────────────────────────────────────
 
 export const api = {
@@ -1258,14 +1448,54 @@ export const api = {
   getDegradationHealth: () => fetchJSON<DegradationHealthResponse>('/health/degradation'),
 
   // Tasks (auth for mutations)
-  getTasks: () => fetchJSON<{ tasks: Task[] }>('/tasks'),
-  getTask: (id: string) => fetchJSON<Task>(`/tasks/${id}`),
+  getTasks: (params: ListTasksParams = {}) => {
+    const qs = new URLSearchParams();
+    if (typeof params.limit === 'number') qs.set('limit', String(params.limit));
+    if (typeof params.offset === 'number') qs.set('offset', String(params.offset));
+    if (params.sessionId) qs.set('sessionId', params.sessionId);
+    if (params.source) qs.set('source', params.source);
+    if (params.search) qs.set('search', params.search);
+    if (params.approach) qs.set('approach', params.approach);
+    if (typeof params.routingLevel === 'number') qs.set('routingLevel', String(params.routingLevel));
+    if (params.needsAction) qs.set('needsAction', params.needsAction);
+    if (params.hasError) qs.set('hasError', 'true');
+    if (typeof params.from === 'number') qs.set('from', String(params.from));
+    if (typeof params.to === 'number') qs.set('to', String(params.to));
+    if (params.sort) qs.set('sort', params.sort);
+    if (params.visibility) qs.set('visibility', params.visibility);
+    if (params.status) {
+      const statuses = Array.isArray(params.status) ? params.status : [params.status];
+      for (const s of statuses) qs.append('status', s);
+    }
+    const tail = qs.toString();
+    return fetchJSON<ListTasksResponse>(tail ? `/tasks?${tail}` : '/tasks');
+  },
+  getTask: (id: string) => fetchJSON<TaskDetailResponse>(`/tasks/${id}`),
   submitTask: (body: Record<string, unknown>) =>
     fetchJSON<{ result: TaskResult }>('/tasks', { method: 'POST', body: JSON.stringify(body) }),
   submitAsyncTask: (body: Record<string, unknown>) =>
     fetchJSON<{ taskId: string; status: string }>('/tasks/async', { method: 'POST', body: JSON.stringify(body) }),
   cancelTask: (id: string) =>
     fetchJSON<{ taskId: string; status: string }>(`/tasks/${id}`, { method: 'DELETE' }),
+
+  /** Soft-hide a task row from the active operations console list. */
+  archiveTask: (id: string) =>
+    fetchJSON<{ taskId: string; archived: boolean }>(`/tasks/${encodeURIComponent(id)}/archive`, {
+      method: 'POST',
+    }),
+  /** Restore an archived task row. */
+  unarchiveTask: (id: string) =>
+    fetchJSON<{ taskId: string; archived: boolean }>(
+      `/tasks/${encodeURIComponent(id)}/unarchive`,
+      { method: 'POST' },
+    ),
+  /**
+   * Bundled JSON snapshot — task summary + result + persisted event log.
+   * The same payload shape can be re-played by the historical replay
+   * reducer, so a saved export is a portable record of the run.
+   */
+  exportTask: (id: string) =>
+    fetchJSON<Record<string, unknown>>(`/tasks/${encodeURIComponent(id)}/export`),
 
   /**
    * Manual retry for a failed/timed-out task. Preserves session, goal,
@@ -1548,6 +1778,90 @@ export const api = {
       );
     },
   },
+
+  // ── Scheduler — durable agent cron ──────────────────────────────────
+  /**
+   * `GET /api/v1/scheduler/jobs` — list scheduled jobs for the
+   * resolved profile. `?profile=*` admin override; `?status=` filter.
+   */
+  getScheduledJobs: (params: { status?: string; profile?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.status) qs.set('status', params.status);
+    if (params.profile) qs.set('profile', params.profile);
+    if (params.limit !== undefined) qs.set('limit', String(params.limit));
+    const tail = qs.toString();
+    return fetchJSON<{
+      jobs: ScheduledJob[];
+      total: number;
+      profile: string;
+    }>(`/scheduler/jobs${tail ? `?${tail}` : ''}`);
+  },
+  getScheduledJob: (id: string) => fetchJSON<{ job: ScheduledJob }>(`/scheduler/jobs/${encodeURIComponent(id)}`),
+  createScheduledJob: (body: CreateScheduledJobBody) =>
+    fetchJSON<{ job: ScheduledJob }>(`/scheduler/jobs`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updateScheduledJob: (id: string, body: Partial<CreateScheduledJobBody>) =>
+    fetchJSON<{ job: ScheduledJob; unchanged?: boolean }>(`/scheduler/jobs/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  pauseScheduledJob: (id: string) =>
+    fetchJSON<{ job: ScheduledJob | null; unchanged?: boolean }>(
+      `/scheduler/jobs/${encodeURIComponent(id)}/pause`,
+      { method: 'POST', body: '{}' },
+    ),
+  resumeScheduledJob: (id: string) =>
+    fetchJSON<{ job: ScheduledJob | null; unchanged?: boolean }>(
+      `/scheduler/jobs/${encodeURIComponent(id)}/resume`,
+      { method: 'POST', body: '{}' },
+    ),
+  runScheduledJobNow: (id: string) =>
+    fetchJSON<{ scheduleId: string; taskId: string; status: string }>(
+      `/scheduler/jobs/${encodeURIComponent(id)}/run`,
+      { method: 'POST', body: '{}' },
+    ),
+  deleteScheduledJob: (id: string) =>
+    fetchJSON<{ deleted: boolean; scheduleId: string }>(
+      `/scheduler/jobs/${encodeURIComponent(id)}`,
+      { method: 'DELETE' },
+    ),
+
+  // ── Skill proposals — agent-managed procedural memory ───────────────
+  getSkillProposals: (params: { status?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.status) qs.set('status', params.status);
+    if (params.limit !== undefined) qs.set('limit', String(params.limit));
+    const tail = qs.toString();
+    return fetchJSON<{
+      proposals: SkillProposal[];
+      total: number;
+      profile: string;
+    }>(`/skill-proposals${tail ? `?${tail}` : ''}`);
+  },
+  getSkillProposal: (id: string) =>
+    fetchJSON<{ proposal: SkillProposal }>(`/skill-proposals/${encodeURIComponent(id)}`),
+  approveSkillProposal: (id: string, body: { decidedBy: string; reason?: string }) =>
+    fetchJSON<{ proposal: SkillProposal }>(`/skill-proposals/${encodeURIComponent(id)}/approve`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  rejectSkillProposal: (id: string, body: { decidedBy: string; reason: string }) =>
+    fetchJSON<{ proposal: SkillProposal }>(`/skill-proposals/${encodeURIComponent(id)}/reject`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  setSkillProposalTrustTier: (id: string, body: { tier: string; decidedBy: string }) =>
+    fetchJSON<{ proposal: SkillProposal; decidedBy: string }>(
+      `/skill-proposals/${encodeURIComponent(id)}/trust-tier`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  deleteSkillProposal: (id: string) =>
+    fetchJSON<{ deleted: boolean; proposalId: string }>(
+      `/skill-proposals/${encodeURIComponent(id)}`,
+      { method: 'DELETE' },
+    ),
 
   /**
    * Send a message using SSE streaming. Returns an async generator that

@@ -1,45 +1,124 @@
-import { useState } from 'react';
-import { useTasks, useSubmitTask, useCancelTask, useRetryTask } from '@/hooks/use-tasks';
-import { useApprovals, useResolveApproval } from '@/hooks/use-approvals';
-import { StatusBadge } from '@/components/ui/badge';
+import { useMemo, useState } from 'react';
+import { ChevronLeft, ChevronRight, RefreshCw } from 'lucide-react';
+import {
+  useArchiveTask,
+  useCancelTask,
+  useRetryTask,
+  useSubmitTask,
+  useTasks,
+  useUnarchiveTask,
+} from '@/hooks/use-tasks';
+import type { ListTasksParams, TaskSummary } from '@/lib/api-client';
 import { PageHeader } from '@/components/ui/page-header';
+import { Tabs, type TabItem } from '@/components/ui/tabs';
 import { toast } from '@/store/toast-store';
-import { ChevronDown, ChevronRight, ExternalLink, MessageSquare, RefreshCw, ShieldAlert } from 'lucide-react';
+import { TasksSummaryStrip } from '@/components/tasks/tasks-summary-strip';
+import { TasksToolbar } from '@/components/tasks/tasks-toolbar';
+import { TasksTable } from '@/components/tasks/tasks-table';
+import { TaskDetailDrawer } from '@/components/tasks/task-detail-drawer';
 
 const DEFAULT_TASK_BUDGET = { maxTokens: 50_000, maxDurationMs: 180_000, maxRetries: 3 } as const;
 const TIMEOUT_RETRY_BUDGET = { maxTokens: 50_000, maxDurationMs: 240_000, maxRetries: 3 } as const;
 
-function formatDuration(ms?: number): string {
-  if (ms == null || ms <= 0) return '—';
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  const min = Math.floor(ms / 60_000);
-  const sec = Math.round((ms % 60_000) / 1000);
-  return sec > 0 ? `${min}m ${sec}s` : `${min}m`;
-}
+type TabId =
+  | 'all'
+  | 'running'
+  | 'needs-action'
+  | 'completed'
+  | 'partial'
+  | 'failed'
+  | 'cancelled'
+  | 'archived';
 
-function isTimeoutTask(t: { result?: { trace?: { outcome?: string; approach?: string }; answer?: string } }): boolean {
-  return (
-    t.result?.trace?.outcome === 'timeout' ||
-    t.result?.trace?.approach === 'wall-clock-timeout' ||
-    t.result?.answer?.startsWith('Task timed out after') === true
-  );
-}
+const TAB_ITEMS: ReadonlyArray<TabItem<TabId>> = [
+  { id: 'all', label: 'All' },
+  { id: 'running', label: 'Running' },
+  { id: 'needs-action', label: 'Needs action' },
+  { id: 'completed', label: 'Completed' },
+  { id: 'partial', label: 'Partial' },
+  { id: 'failed', label: 'Failed' },
+  { id: 'cancelled', label: 'Cancelled' },
+  { id: 'archived', label: 'Archived' },
+];
 
+/**
+ * Tasks Operations Console.
+ *
+ * Replaces the legacy `/tasks` simple list. The page is a triage-first
+ * surface: summary strip → status tabs → filters → dense list → detail
+ * drawer. Process replay reuses the existing `HistoricalProcessCard`
+ * (lock-step with the chat bubble) so the drawer's Process tab is
+ * structurally identical to the live process view.
+ */
 export default function Tasks() {
-  const tasksQuery = useTasks();
-  const tasks = tasksQuery.data ?? [];
-  const approvalsQuery = useApprovals();
-  const pendingApprovals = approvalsQuery.data ?? [];
-  const submitTask = useSubmitTask();
-  const cancelTask = useCancelTask();
-  const retryTask = useRetryTask();
-  const resolveApproval = useResolveApproval();
-
+  // ── Filter state ────────────────────────────────────────────────────
+  const [tab, setTab] = useState<TabId>('all');
+  const [search, setSearch] = useState('');
+  const [routingLevel, setRoutingLevel] = useState<number | undefined>(undefined);
+  const [source, setSource] = useState<'ui' | 'api' | 'all'>('all');
+  const [approach, setApproach] = useState('');
+  const [hasError, setHasError] = useState(false);
+  const [sort, setSort] = useState<NonNullable<ListTasksParams['sort']>>('created-desc');
+  const [pageSize, setPageSize] = useState(50);
+  const [offset, setOffset] = useState(0);
   const [showForm, setShowForm] = useState(false);
   const [goal, setGoal] = useState('');
   const [taskType, setTaskType] = useState<'reasoning' | 'code'>('reasoning');
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  const params: ListTasksParams = useMemo(() => {
+    const next: ListTasksParams = {
+      limit: pageSize,
+      offset,
+      search: search.trim() || undefined,
+      source,
+      approach: approach.trim() || undefined,
+      hasError: hasError || undefined,
+      sort,
+      routingLevel,
+    };
+    if (tab === 'running') next.status = ['running', 'pending'];
+    else if (tab === 'completed') next.status = ['completed'];
+    else if (tab === 'partial') next.status = ['partial', 'uncertain', 'escalated'];
+    else if (tab === 'failed') next.status = ['failed', 'timeout'];
+    else if (tab === 'cancelled') next.status = ['cancelled'];
+    else if (tab === 'needs-action') next.needsAction = 'any';
+    else if (tab === 'archived') next.visibility = 'archived';
+    return next;
+  }, [tab, search, source, approach, hasError, sort, pageSize, offset, routingLevel]);
+
+  const tasksQuery = useTasks(params);
+  const submitTask = useSubmitTask();
+  const cancelTask = useCancelTask();
+  const retryTask = useRetryTask();
+  const archiveTask = useArchiveTask();
+  const unarchiveTask = useUnarchiveTask();
+
+  const tasks = tasksQuery.data?.tasks ?? [];
+  const total = tasksQuery.data?.total ?? 0;
+  const counts = tasksQuery.data?.counts;
+  const selectedTask = useMemo(
+    () => tasks.find((t) => t.taskId === selectedId) ?? null,
+    [tasks, selectedId],
+  );
+
+  const hasActiveFilters =
+    !!search.trim() ||
+    routingLevel !== undefined ||
+    source !== 'all' ||
+    !!approach.trim() ||
+    hasError ||
+    sort !== 'created-desc';
+
+  const clearFilters = () => {
+    setSearch('');
+    setRoutingLevel(undefined);
+    setSource('all');
+    setApproach('');
+    setHasError(false);
+    setSort('created-desc');
+    setOffset(0);
+  };
 
   const handleSubmit = async () => {
     if (!goal.trim()) return;
@@ -53,50 +132,68 @@ export default function Tasks() {
       setShowForm(false);
       toast.success('Task submitted');
     } catch {
-      // toast already surfaced by mutation onError
+      // toast surfaced by mutation
     }
   };
 
-  const isRefetching = tasksQuery.isFetching;
+  const handleRetry = (task: TaskSummary) => {
+    const retryGoal = task.goal || task.errorSummary || task.result?.answer;
+    if (!retryGoal?.trim()) {
+      toast.error('Cannot retry: no goal available');
+      return;
+    }
+    retryTask.mutate(
+      {
+        taskId: task.taskId,
+        reason: 'manual-retry-from-tasks-console',
+        ...(task.needsActionType === 'timeout' ? { maxDurationMs: TIMEOUT_RETRY_BUDGET.maxDurationMs } : {}),
+      },
+      {
+        onSuccess: () => toast.success('Retry submitted'),
+        onError: (err) => {
+          // Fall back to a fresh sibling submission when the parent isn't tracked.
+          const status = (err as { status?: number } | undefined)?.status;
+          if (status === 404) {
+            submitTask.mutate({
+              goal: retryGoal,
+              taskType: task.affectedFiles?.length ? 'code' : 'reasoning',
+              targetFiles: task.affectedFiles,
+              budget: TIMEOUT_RETRY_BUDGET,
+            });
+          }
+        },
+      },
+    );
+  };
 
-  const handleRetryTimeout = async (task: (typeof tasks)[number]) => {
-    const retryGoal = task.goal || task.result?.answer;
-    if (!retryGoal?.trim()) return;
+  const handleCancel = (task: TaskSummary) => {
+    cancelTask.mutate(task.taskId, {
+      onSuccess: () => toast.info('Task cancelled'),
+    });
+  };
+
+  const handleArchive = (task: TaskSummary) => {
+    archiveTask.mutate(task.taskId, { onSuccess: () => toast.info('Task archived') });
+  };
+
+  const handleUnarchive = (task: TaskSummary) => {
+    unarchiveTask.mutate(task.taskId, { onSuccess: () => toast.info('Task restored') });
+  };
+
+  const handleCopyId = async (task: TaskSummary) => {
     try {
-      // Prefer the parent-linked retry endpoint so the new task inherits
-      // sessionId / goal / targetFiles / constraints from the timed-out
-      // parent. Falls back to a fresh submission only if the parent isn't
-      // tracked (e.g. async-only API tasks not persisted in sessions).
-      try {
-        await retryTask.mutateAsync({
-          taskId: task.taskId,
-          reason: 'manual-retry-from-tasks-page',
-          maxDurationMs: TIMEOUT_RETRY_BUDGET.maxDurationMs,
-        });
-        toast.success('Retry submitted with a 4m budget');
-        return;
-      } catch (err) {
-        // 404 → parent untracked → fall back to creating a fresh sibling.
-        const status = (err as { status?: number } | undefined)?.status;
-        if (status !== 404) throw err;
-      }
-      await submitTask.mutateAsync({
-        goal: retryGoal,
-        taskType: task.result?.trace?.affectedFiles?.length ? 'code' : 'reasoning',
-        targetFiles: task.result?.trace?.affectedFiles,
-        budget: TIMEOUT_RETRY_BUDGET,
-      });
-      toast.success('Retry submitted with a 4m budget');
+      await navigator.clipboard.writeText(task.taskId);
+      toast.success('Task id copied');
     } catch {
-      // toast already surfaced by mutation onError
+      toast.error('Could not copy');
     }
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2 pb-4">
       <PageHeader
         title="Tasks"
-        description={`${tasks.length} task${tasks.length !== 1 ? 's' : ''} — auto-refreshes via SSE`}
+        description={`${total} task${total === 1 ? '' : 's'} matching · auto-refreshes via SSE`}
         actions={
           <>
             <button
@@ -104,13 +201,14 @@ export default function Tasks() {
               className="p-1.5 rounded text-text-dim hover:text-text hover:bg-white/5 transition-colors"
               onClick={() => tasksQuery.refetch()}
               title="Refresh"
+              aria-label="Refresh"
             >
-              <RefreshCw size={14} className={isRefetching ? 'animate-spin' : ''} />
+              <RefreshCw size={14} className={tasksQuery.isFetching ? 'animate-spin' : ''} />
             </button>
             <button
               type="button"
               className="px-3 py-1.5 rounded font-medium text-sm bg-accent text-white hover:bg-accent/80 transition-colors"
-              onClick={() => setShowForm(!showForm)}
+              onClick={() => setShowForm((v) => !v)}
             >
               {showForm ? 'Cancel' : 'New Task'}
             </button>
@@ -118,251 +216,181 @@ export default function Tasks() {
         }
       />
 
-      {/* Submit form */}
       {showForm && (
-        <div className="bg-surface rounded-lg border border-border p-4 space-y-3">
+        <div className="bg-surface rounded-md border border-border p-3 space-y-2">
           <div>
-            <label className="text-xs text-text-dim block mb-1">Goal</label>
+            <label className="text-[10px] uppercase tracking-wider text-text-dim block mb-1">Goal</label>
             <input
-              className="w-full bg-bg border border-border rounded px-3 py-2 text-sm text-text placeholder-gray-500 focus:outline-none focus:border-accent"
-              placeholder="Describe the task..."
+              className="w-full bg-bg border border-border rounded px-2 py-1.5 text-xs text-text placeholder-gray-500 focus:outline-none focus:border-accent"
+              placeholder="Describe the task…"
               value={goal}
               onChange={(e) => setGoal(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleSubmit()}
               autoFocus
             />
           </div>
-          <div className="flex items-center gap-4">
-            <div>
-              <label className="text-xs text-text-dim block mb-1">Type</label>
-              <select
-                className="bg-bg border border-border rounded px-3 py-2 text-sm text-text"
-                value={taskType}
-                onChange={(e) => setTaskType(e.target.value as 'reasoning' | 'code')}
-              >
-                <option value="reasoning">Reasoning</option>
-                <option value="code">Code</option>
-              </select>
-            </div>
+          <div className="flex items-center gap-2">
+            <select
+              className="bg-bg border border-border rounded px-2 py-1 h-7 text-xs text-text"
+              value={taskType}
+              onChange={(e) => setTaskType(e.target.value as 'reasoning' | 'code')}
+              aria-label="Task type"
+            >
+              <option value="reasoning">Reasoning</option>
+              <option value="code">Code</option>
+            </select>
             <button
               type="button"
-              className="px-4 py-2 rounded font-medium text-sm bg-green/20 text-green border border-green/30 hover:bg-green/30 transition-colors mt-5 disabled:opacity-50"
+              className="px-3 py-1 h-7 rounded text-xs font-medium bg-green/20 text-green border border-green/30 hover:bg-green/30 transition-colors disabled:opacity-50"
               onClick={handleSubmit}
               disabled={submitTask.isPending || !goal.trim()}
             >
-              {submitTask.isPending ? 'Submitting...' : 'Submit'}
+              {submitTask.isPending ? 'Submitting…' : 'Submit'}
             </button>
           </div>
         </div>
       )}
 
-      {/* Pending approvals */}
-      {pendingApprovals.length > 0 && (
-        <div className="space-y-2">
-          {pendingApprovals.map((approval) => (
-            <div
-              key={approval.taskId}
-              className="bg-yellow/5 border border-yellow/20 rounded-lg px-4 py-3 flex items-center gap-3"
-            >
-              <ShieldAlert size={16} className="text-yellow shrink-0" />
-              <div className="flex-1 text-sm min-w-0">
-                <div className="flex items-baseline gap-2">
-                  <span className="text-yellow font-medium">Approval required</span>
-                  <span
-                    className="text-text-dim font-mono text-xs truncate"
-                    title={approval.taskId}
-                  >
-                    {approval.taskId}
-                  </span>
-                </div>
-                <div className="text-xs text-text-dim truncate" title={approval.reason}>
-                  {approval.reason}
-                  <span className="ml-2 font-mono">risk {approval.riskScore.toFixed(2)}</span>
-                </div>
-              </div>
-              <button
-                type="button"
-                className="px-3 py-1 text-xs rounded bg-green/20 text-green border border-green/30 hover:bg-green/30 transition-colors"
-                onClick={() => resolveApproval.mutate({ taskId: approval.taskId, decision: 'approved' })}
-                disabled={resolveApproval.isPending}
-              >
-                Approve
-              </button>
-              <button
-                type="button"
-                className="px-3 py-1 text-xs rounded bg-red/20 text-red border border-red/30 hover:bg-red/30 transition-colors"
-                onClick={() => resolveApproval.mutate({ taskId: approval.taskId, decision: 'rejected' })}
-                disabled={resolveApproval.isPending}
-              >
-                Reject
-              </button>
-            </div>
-          ))}
-        </div>
+      <TasksSummaryStrip
+        counts={counts}
+        total={total}
+        loading={tasksQuery.isLoading}
+        activeTab={tab}
+        onSelect={(id) => {
+          setTab(id);
+          setOffset(0);
+        }}
+      />
+
+      <Tabs<TabId>
+        items={TAB_ITEMS.map((t) => ({
+          ...t,
+          count:
+            t.id === 'needs-action'
+              ? counts?.needsActionTotal
+              : t.id === 'partial'
+                ? (counts?.byStatus?.partial ?? 0) +
+                  (counts?.byStatus?.uncertain ?? 0) +
+                  (counts?.byStatus?.escalated ?? 0)
+                : t.id === 'cancelled'
+                  ? counts?.byStatus?.cancelled
+                  : undefined,
+        }))}
+        active={tab}
+        onChange={(id) => {
+          setTab(id);
+          setOffset(0);
+        }}
+        variant="pills"
+      />
+
+      <TasksToolbar
+        search={search}
+        onSearchChange={(v) => {
+          setSearch(v);
+          setOffset(0);
+        }}
+        routingLevel={routingLevel}
+        onRoutingLevelChange={(v) => {
+          setRoutingLevel(v);
+          setOffset(0);
+        }}
+        source={source}
+        onSourceChange={(v) => {
+          setSource(v);
+          setOffset(0);
+        }}
+        approach={approach}
+        onApproachChange={(v) => {
+          setApproach(v);
+          setOffset(0);
+        }}
+        hasError={hasError}
+        onHasErrorChange={(v) => {
+          setHasError(v);
+          setOffset(0);
+        }}
+        sort={sort}
+        onSortChange={(v) => {
+          setSort(v);
+          setOffset(0);
+        }}
+        pageSize={pageSize}
+        onPageSizeChange={(v) => {
+          setPageSize(v);
+          setOffset(0);
+        }}
+        onClear={clearFilters}
+        hasActiveFilters={hasActiveFilters}
+      />
+
+      <TasksTable
+        tasks={tasks}
+        selectedTaskId={selectedId}
+        onSelect={(id) => setSelectedId(id)}
+        onCancel={handleCancel}
+        onRetry={handleRetry}
+        onArchive={handleArchive}
+        onUnarchive={handleUnarchive}
+        onCopyId={handleCopyId}
+        loading={tasksQuery.isLoading}
+      />
+
+      <Pagination
+        total={total}
+        offset={offset}
+        pageSize={pageSize}
+        onPrev={() => setOffset((o) => Math.max(0, o - pageSize))}
+        onNext={() => setOffset((o) => o + pageSize)}
+      />
+
+      {selectedTask && (
+        <TaskDetailDrawer task={selectedTask} onClose={() => setSelectedId(null)} />
       )}
+    </div>
+  );
+}
 
-      {/* Task list */}
-      <div className="bg-surface rounded-lg border border-border overflow-hidden">
-        {tasks.length === 0 ? (
-          <div className="text-sm text-text-dim text-center py-8">No tasks yet — submit one above</div>
-        ) : (
-          <div className="divide-y divide-border/50">
-            {tasks.map((t) => {
-              const isExpanded = expanded === t.taskId;
-              const summary = t.goal || t.result?.answer || t.result?.escalationReason;
-              const answer = t.result?.answer;
-              const hasDetail = !!(t.result?.trace || t.result?.qualityScore || answer);
-
-              return (
-                <div key={t.taskId} className="group">
-                  {/* Main row */}
-                  <div
-                    className="flex items-start gap-3 px-4 py-3 hover:bg-white/2 cursor-pointer"
-                    onClick={() => setExpanded(isExpanded ? null : t.taskId)}
-                    role="button"
-                    tabIndex={0}
-                    onKeyDown={(e) => e.key === 'Enter' && setExpanded(isExpanded ? null : t.taskId)}
-                  >
-                    {/* Expand icon */}
-                    <span className="mt-0.5 text-text-dim shrink-0">
-                      {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                    </span>
-
-                    {/* Content */}
-                    <div className="flex-1 min-w-0 space-y-1">
-                      {/* Goal / summary */}
-                      <div className="text-sm text-text">
-                        {summary
-                          ? <span className="line-clamp-2">{summary}</span>
-                          : <span className="text-text-dim italic">{t.status === 'running' ? 'In progress…' : 'No description'}</span>
-                        }
-                      </div>
-
-                      {/* Meta row */}
-                      <div className="flex items-center gap-3 text-[10px] text-text-dim font-mono tabular-nums">
-                        <span className="truncate max-w-[18ch]" title={t.taskId}>{t.taskId.slice(0, 8)}</span>
-                        {t.result?.trace && (
-                          <>
-                            <span>L{t.result.trace.routingLevel}</span>
-                            {t.result.trace.tokensConsumed > 0 && (
-                              <span>{t.result.trace.tokensConsumed.toLocaleString()} tok</span>
-                            )}
-                            {t.result.trace.durationMs > 0 && (
-                              <span>{formatDuration(t.result.trace.durationMs)}</span>
-                            )}
-                            {t.result.trace.modelUsed && t.result.trace.modelUsed !== 'none' && (
-                              <span>{t.result.trace.modelUsed}</span>
-                            )}
-                          </>
-                        )}
-                        {t.sessionId && (
-                          <a
-                            href={`/sessions/${t.sessionId}`}
-                            className="inline-flex items-center gap-0.5 text-accent hover:underline"
-                            onClick={(e) => e.stopPropagation()}
-                            title="Open session"
-                          >
-                            <MessageSquare size={9} /> Chat
-                          </a>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Status + actions */}
-                    <div className="flex items-center gap-2 shrink-0">
-                      <StatusBadge status={t.status} />
-                      {t.status === 'running' && (
-                        <button
-                          type="button"
-                          className="px-2 py-0.5 text-xs rounded bg-red/20 text-red border border-red/30 hover:bg-red/30 transition-colors opacity-0 group-hover:opacity-100"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            // Show the toast only after the backend confirms the
-                            // cancel — otherwise a 404 (task already finished)
-                            // still surfaces "Task cancelled", contradicting the
-                            // error toast that the mutation's onError raises.
-                            cancelTask.mutate(t.taskId, {
-                              onSuccess: () => toast.info('Task cancelled'),
-                            });
-                          }}
-                          disabled={cancelTask.isPending}
-                        >
-                          Cancel
-                        </button>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Expanded detail */}
-                  {isExpanded && hasDetail && (
-                    <div className="px-4 pb-3 pl-11 space-y-2">
-                      {/* Answer */}
-                      {answer && (
-                        <div className="bg-bg/50 rounded-md p-3 text-sm text-text whitespace-pre-wrap border border-border/50">
-                          {answer}
-                          {isTimeoutTask(t) && (
-                            <div className="mt-3 flex items-center justify-between gap-3 border-t border-border/40 pt-2 text-xs">
-                              <span className="text-text-dim">
-                                This task exceeded its time budget. Retry with a longer budget to let the workflow finish.
-                              </span>
-                              <button
-                                type="button"
-                                className="shrink-0 rounded px-2 py-1 bg-accent/15 text-accent hover:bg-accent/25 transition-colors disabled:opacity-50"
-                                onClick={() => handleRetryTimeout(t)}
-                                disabled={
-                                  submitTask.isPending ||
-                                  retryTask.isPending ||
-                                  t.status === 'running'
-                                }
-                              >
-                                Retry 4m
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      )}
-
-                      {/* Trace details */}
-                      {t.result?.trace && (
-                        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-text-dim">
-                          <span>Route: <span className="text-text">L{t.result.trace.routingLevel}</span></span>
-                          <span>Tokens: <span className="text-text tabular-nums">{t.result.trace.tokensConsumed.toLocaleString()}</span></span>
-                          <span>Duration: <span className="text-text tabular-nums">{formatDuration(t.result.trace.durationMs)}</span></span>
-                          <span>Model: <span className="text-text">{t.result.trace.modelUsed ?? '-'}</span></span>
-                          {t.result.trace.approach && (
-                            <span>Approach: <span className="text-text">{t.result.trace.approach}</span></span>
-                          )}
-                        </div>
-                      )}
-
-                      {/* Quality score */}
-                      {t.result?.qualityScore && (
-                        <div className="text-xs text-text-dim">
-                          Quality: <span className="text-text tabular-nums">{t.result.qualityScore.composite.toFixed(2)}</span>
-                          <span className="ml-2">({t.result.qualityScore.dimensionsAvailable}D {t.result.qualityScore.phase})</span>
-                        </div>
-                      )}
-
-                      {/* Full task ID */}
-                      <div className="text-[10px] text-text-dim font-mono flex items-center gap-2">
-                        <span>ID: {t.taskId}</span>
-                        {t.sessionId && (
-                          <a
-                            href={`/sessions/${t.sessionId}`}
-                            className="inline-flex items-center gap-0.5 text-accent hover:underline"
-                          >
-                            <ExternalLink size={9} /> Open in Chat
-                          </a>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
+function Pagination({
+  total,
+  offset,
+  pageSize,
+  onPrev,
+  onNext,
+}: {
+  total: number;
+  offset: number;
+  pageSize: number;
+  onPrev: () => void;
+  onNext: () => void;
+}) {
+  const start = total === 0 ? 0 : offset + 1;
+  const end = Math.min(offset + pageSize, total);
+  const hasPrev = offset > 0;
+  const hasNext = end < total;
+  return (
+    <div className="flex items-center justify-end gap-2 text-xs text-text-dim font-mono tabular-nums">
+      <span>
+        {start}–{end} of {total}
+      </span>
+      <button
+        type="button"
+        disabled={!hasPrev}
+        onClick={onPrev}
+        className="p-1 rounded border border-border hover:bg-white/5 disabled:opacity-40 disabled:cursor-not-allowed"
+        aria-label="Previous page"
+      >
+        <ChevronLeft size={12} />
+      </button>
+      <button
+        type="button"
+        disabled={!hasNext}
+        onClick={onNext}
+        className="p-1 rounded border border-border hover:bg-white/5 disabled:opacity-40 disabled:cursor-not-allowed"
+        aria-label="Next page"
+      >
+        <ChevronRight size={12} />
+      </button>
     </div>
   );
 }

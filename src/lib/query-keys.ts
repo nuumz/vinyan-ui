@@ -5,7 +5,14 @@ export const qk = {
   metrics: ['metrics'] as const,
   prometheus: ['prometheus'] as const,
   tasks: ['tasks'] as const,
+  /**
+   * Operations console list — keyed by serialized filters so flipping
+   * a status / source / search input doesn't collide with the bare
+   * `qk.tasks` invalidation token.
+   */
+  tasksList: (params: Record<string, unknown>) => ['tasks', 'list', params] as const,
   task: (id: string) => ['tasks', id] as const,
+  taskDetail: (id: string) => ['tasks', 'detail', id] as const,
   workers: ['workers'] as const,
   sessions: ['sessions'] as const,
   sessionsList: (state: string, source: string, search: string) =>
@@ -43,4 +50,11 @@ export const qk = {
   governanceSearch: (filter: string) => ['governance', 'search', filter] as const,
   governanceReplay: (decisionId: string) => ['governance', 'replay', decisionId] as const,
   degradationHealth: ['health', 'degradation'] as const,
+  scheduler: ['scheduler'] as const,
+  schedulerList: (status?: string, profile?: string) =>
+    ['scheduler', 'list', status ?? null, profile ?? null] as const,
+  schedulerJob: (id: string) => ['scheduler', 'job', id] as const,
+  skillProposals: ['skill-proposals'] as const,
+  skillProposalsList: (status?: string) => ['skill-proposals', 'list', status ?? null] as const,
+  skillProposal: (id: string) => ['skill-proposals', 'detail', id] as const,
 };

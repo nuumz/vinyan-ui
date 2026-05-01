@@ -34,6 +34,8 @@ const HMS = lazy(() => import('./pages/hms'));
 const Providers = lazy(() => import('./pages/providers'));
 const Federation = lazy(() => import('./pages/federation'));
 const Market = lazy(() => import('./pages/market'));
+const Scheduler = lazy(() => import('./pages/scheduler'));
+const SkillProposals = lazy(() => import('./pages/skill-proposals'));
 
 function Loading() {
   return <div className="text-text-dim text-sm">Loading...</div>;
@@ -75,6 +77,8 @@ export default function App() {
             <Route path="/providers" element={<Providers />} />
             <Route path="/federation" element={<Federation />} />
             <Route path="/market" element={<Market />} />
+            <Route path="/scheduler" element={<Scheduler />} />
+            <Route path="/skill-proposals" element={<SkillProposals />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>

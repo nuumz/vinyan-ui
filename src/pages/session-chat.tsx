@@ -112,7 +112,7 @@ export default function SessionChat() {
     if (!sessionId) return [];
     const approvals = approvalsQuery.data ?? [];
     if (approvals.length === 0) return [];
-    const sessionTaskIds = (tasksQuery.data ?? [])
+    const sessionTaskIds = (tasksQuery.data?.tasks ?? [])
       .filter((t) => t.sessionId === sessionId)
       .map((t) => t.taskId);
     if (sessionTaskIds.length === 0) return [];
@@ -165,7 +165,7 @@ export default function SessionChat() {
 
   useEffect(() => {
     if (!sessionId) return;
-    const runningTask = tasksQuery.data?.find((task) => task.sessionId === sessionId && task.status === 'running');
+    const runningTask = tasksQuery.data?.tasks?.find((task) => task.sessionId === sessionId && task.status === 'running');
     if (runningTask) {
       hydrateRunningTask(sessionId, runningTask.taskId);
       return;
@@ -184,7 +184,7 @@ export default function SessionChat() {
       turn?.status === 'running' &&
       turn.recovered &&
       turn.taskId &&
-      tasksQuery.data?.some(
+      tasksQuery.data?.tasks?.some(
         (task) => task.taskId === turn.taskId && task.status !== 'running',
       )
     ) {

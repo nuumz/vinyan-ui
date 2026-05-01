@@ -105,7 +105,7 @@ export default function Engines() {
   const tasksQuery = useTasks();
   const metricsQuery = useMetrics();
   const engines = workersQuery.data ?? [];
-  const tasks = tasksQuery.data ?? [];
+  const tasks = tasksQuery.data?.tasks ?? [];
   const metrics = metricsQuery.data ?? null;
 
   const [filter, setFilter] = useState<EngineStatus | null>(null);

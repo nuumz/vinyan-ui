@@ -28,6 +28,7 @@ import {
   Landmark,
   Gavel,
   BadgeCheck,
+  Calendar,
   type LucideIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -61,6 +62,7 @@ const navGroups: NavGroup[] = [
     items: [
       { to: '/', icon: LayoutDashboard, label: 'Overview' },
       { to: '/tasks', icon: ListTodo, label: 'Tasks' },
+      { to: '/scheduler', icon: Calendar, label: 'Scheduler' },
       { to: '/approvals', icon: ShieldCheck, label: 'Approvals' },
       { to: '/sessions', icon: MessageSquare, label: 'Sessions' },
       { to: '/events', icon: Activity, label: 'Events' },
@@ -85,6 +87,7 @@ const navGroups: NavGroup[] = [
     defaultOpen: false,
     items: [
       { to: '/skills', icon: Sparkles, label: 'Skills' },
+      { to: '/skill-proposals', icon: BadgeCheck, label: 'Proposals' },
       { to: '/patterns', icon: Lightbulb, label: 'Patterns' },
       { to: '/world-graph', icon: Globe, label: 'World Graph' },
       { to: '/memory', icon: BookOpenCheck, label: 'Memory' },
