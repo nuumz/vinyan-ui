@@ -24,7 +24,7 @@ import { AgentTimelineCard } from './agent-timeline-card';
 import { CodingCliCard } from './coding-cli-card';
 import { DiagnosticsDrawer } from './diagnostics-drawer';
 import { FinalAnswer } from './final-answer';
-import { InterruptBanner } from './interrupt-banner';
+import { InterruptBanner, type ActionableGateName } from './interrupt-banner';
 import { PartialDecisionCard } from './partial-decision-card';
 import { PlanSurface } from './plan-surface';
 import { ProcessTimeline } from './process-timeline';
@@ -57,6 +57,15 @@ interface TurnProcessSurfacesProps {
    * a debug drilldown). Leave undefined to defer to the policy.
    */
   defaultExpandStage?: boolean;
+  /**
+   * Historical mode override — gates the backend projection reports as
+   * still open (`gate.open && !gate.resolved`). Forwarded to
+   * `InterruptBanner` and `PartialDecisionCard` so the corresponding
+   * action affordances stay enabled while the rest of the surface
+   * remains in historical (read-only) styling. Empty / undefined =
+   * pure historical replay, no live actions.
+   */
+  actionableGates?: ReadonlySet<ActionableGateName>;
 }
 
 /**
@@ -71,6 +80,7 @@ export function TurnProcessSurfaces({
   nowMs,
   onRetry,
   defaultExpandStage,
+  actionableGates,
 }: TurnProcessSurfacesProps) {
   const readOnly = mode === 'historical';
   const policy = useMemo(() => buildTurnSurfaceRenderPolicy(turn, mode), [turn, mode]);
@@ -78,6 +88,7 @@ export function TurnProcessSurfaces({
     !!turn.pendingPartialDecision && (readOnly || turn.status === 'awaiting-human-input');
   const stageOpen =
     defaultExpandStage ?? policy.defaultOpenSections.has('stageManifest');
+  const partialDecisionReadOnly = readOnly && !(actionableGates?.has('partialDecision') ?? false);
 
   return (
     <>
@@ -87,6 +98,7 @@ export function TurnProcessSurfaces({
         sessionId={sessionId}
         onRetry={readOnly ? undefined : onRetry}
         readOnly={readOnly}
+        actionableGates={actionableGates}
       />
       {showPartialDecision && (
         <PartialDecisionCard
@@ -94,7 +106,7 @@ export function TurnProcessSurfaces({
           pending={turn.pendingPartialDecision!}
           planSteps={turn.planSteps}
           nowMs={nowMs}
-          readOnly={readOnly}
+          readOnly={partialDecisionReadOnly}
         />
       )}
       {policy.showStageManifest && (

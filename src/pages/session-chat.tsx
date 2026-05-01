@@ -3,6 +3,7 @@ import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useSessionMessages, useSendMessage } from '@/hooks/use-chat';
 import { useStreamingTurn, useStreamingTurnStore } from '@/hooks/use-streaming-turn';
 import { useRecoverTurnHistory } from '@/hooks/use-recover-turn-history';
+import { useSessionEventHistory } from '@/hooks/use-session-event-history';
 import { useTasks, useRetryTask } from '@/hooks/use-tasks';
 import { useApprovals } from '@/hooks/use-approvals';
 import {
@@ -39,12 +40,40 @@ import {
 
 type ChatConfirmKind = 'archive' | 'unarchive' | 'delete' | 'compact';
 
+/**
+ * Task lifecycle statuses that mean "this task is done — no further
+ * runtime activity will land on the bus." Used to gate hydrate-recovery
+ * on session mount: any status NOT in this set is treated as in-flight
+ * and triggers `hydrateRunningTask` so the streaming bubble can replay
+ * persisted events (workflow plan, in-progress steps, paused gates).
+ *
+ * `pending` is intentionally NOT terminal because the lifecycle enum
+ * collapses both "queued, never started" AND "paused at workflow
+ * approval gate" into the same value. Hydrating a queued task with no
+ * events is a no-op (empty replay); hydrating an awaiting-approval
+ * task is the whole point — surfaces the actionable plan card.
+ */
+const TERMINAL_TASK_STATUSES = new Set<string>([
+  'completed',
+  'failed',
+  'escalated',
+  'timeout',
+  'cancelled',
+]);
+
 export default function SessionChat() {
   const { id } = useParams<{ id: string }>();
   const sessionId = id ?? null;
   const navigate = useNavigate();
   const messagesQuery = useSessionMessages(sessionId);
   const sendMessage = useSendMessage(sessionId);
+  // Prefetch every persisted UI-visible event for the session and seed
+  // each task's `task-event-history` cache. Without this, SSE only
+  // forwards events from the connection time onward and per-task fetches
+  // only fire when a `HistoricalProcessCard` mounts — so a fresh nav
+  // back to an existing session shows nothing of the prior workflow
+  // timeline (plan / steps / sub-agents) until the user expands a card.
+  useSessionEventHistory(sessionId);
   const turn = useStreamingTurn(sessionId);
   const clearTurn = useStreamingTurnStore((s) => s.clear);
   const hydrateRunningTask = useStreamingTurnStore((s) => s.hydrateRunningTask);
@@ -180,14 +209,27 @@ export default function SessionChat() {
 
   useEffect(() => {
     if (!sessionId) return;
-    const runningTask = tasksQuery.data?.tasks?.find((task) => task.sessionId === sessionId && task.status === 'running');
-    if (runningTask) {
-      hydrateRunningTask(sessionId, runningTask.taskId);
+    // Hydrate ANY non-terminal task: `running` (executing), `input-required`
+    // (paused at clarification), or `pending` (queued OR paused at the
+    // workflow approval gate — the lifecycle enum collapses both into
+    // `pending` since there's no dedicated `awaiting-approval` value).
+    // Without `pending`, a session whose only task is parked at the
+    // approval gate renders nothing on refresh: hydrate isn't called →
+    // no recovered turn → useRecoverTurnHistory never fires → the
+    // workflow plan card never appears, and the user has no way to
+    // approve / reject from the chat surface. The cost of including
+    // `pending` is a brief empty bubble for genuinely-queued tasks;
+    // those self-correct as soon as the first event lands.
+    const inFlightTask = tasksQuery.data?.tasks?.find(
+      (task) => task.sessionId === sessionId && !TERMINAL_TASK_STATUSES.has(task.status),
+    );
+    if (inFlightTask) {
+      hydrateRunningTask(sessionId, inFlightTask.taskId);
       return;
     }
     // Drop the recovered turn ONLY if the task it points to is conclusively
     // gone — i.e. tasksQuery has refreshed AND the turn's taskId appears
-    // there with a non-running status. The previous condition fired whenever
+    // there in a terminal state. The previous condition fired whenever
     // tasksQuery had no running task for this session, which raced against
     // ingestGlobal: a cross-source task:start would create a recovered turn,
     // tasksQuery hadn't refetched yet, and we'd wipe the freshly-created
@@ -200,7 +242,7 @@ export default function SessionChat() {
       turn.recovered &&
       turn.taskId &&
       tasksQuery.data?.tasks?.some(
-        (task) => task.taskId === turn.taskId && task.status !== 'running',
+        (task) => task.taskId === turn.taskId && TERMINAL_TASK_STATUSES.has(task.status),
       )
     ) {
       dropRecoveredTurn(sessionId);

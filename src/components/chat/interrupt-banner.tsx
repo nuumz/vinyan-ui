@@ -4,6 +4,16 @@ import { TurnErrorPanel } from './turn-error-panel';
 import { WorkflowApprovalCard } from './workflow-approval-card';
 import { WorkflowHumanInputCard } from './workflow-human-input-card';
 
+/**
+ * Names of gates that the backend projection can flag as still open
+ * even when this banner is rendered in historical mode. Surfacing them
+ * here means a user looking at a "frozen" replay (e.g. /tasks drawer
+ * Process tab) can still take the live action — approve a workflow
+ * plan, answer a human-input prompt, decide on a partial failure —
+ * without bouncing back to the chat surface.
+ */
+export type ActionableGateName = 'approval' | 'humanInput' | 'partialDecision';
+
 interface InterruptBannerProps {
   turn: StreamingTurn;
   sessionId: string;
@@ -15,6 +25,15 @@ interface InterruptBannerProps {
    * still surfaces the gate as a recorded snapshot.
    */
   readOnly?: boolean;
+  /**
+   * Override `readOnly` per-gate. When `readOnly === true` AND the
+   * current gate is in this set, the corresponding sub-card renders
+   * with `readOnly=false` so the user can act on it. Keys mirror the
+   * backend projection's `gates` field — pass derived names when
+   * `projection.gates.<name>.open && !resolved`. Default empty set =
+   * pure historical, no live actions.
+   */
+  actionableGates?: ReadonlySet<ActionableGateName>;
 }
 
 /**
@@ -36,7 +55,15 @@ export function InterruptBanner({
   sessionId,
   onRetry,
   readOnly = false,
+  actionableGates,
 }: InterruptBannerProps) {
+  // Per-gate readOnly resolution. Defaults to the banner-level flag,
+  // but a gate listed in `actionableGates` flips back to interactive —
+  // the historical card sees a recorded snapshot for closed gates and
+  // a live action surface for open ones, without two separate banners.
+  const isActionable = (gate: ActionableGateName) =>
+    !readOnly || (actionableGates?.has(gate) ?? false);
+
   // In live mode the gates are matched on `turn.status` so they only fire
   // while the workflow is actually paused. In historical mode the
   // recording may have stopped while a gate was open AND the reducer's
@@ -48,7 +75,7 @@ export function InterruptBanner({
       <WorkflowApprovalCard
         sessionId={sessionId}
         pending={turn.pendingApproval}
-        readOnly={readOnly}
+        readOnly={!isActionable('approval')}
       />
     );
   }
@@ -58,7 +85,7 @@ export function InterruptBanner({
       <WorkflowHumanInputCard
         sessionId={sessionId}
         pending={turn.pendingHumanInput}
-        readOnly={readOnly}
+        readOnly={!isActionable('humanInput')}
       />
     );
   }

@@ -1881,6 +1881,40 @@ export const api = {
   getTaskProcessState: (taskId: string) =>
     fetchJSON<TaskProcessProjection>(`/tasks/${encodeURIComponent(taskId)}/process-state`),
 
+  /**
+   * Cross-task event log for a session, ordered by `(ts, id)`.
+   *
+   * Backs the session-mount prefetch path: SSE only forwards events from
+   * the connection time onward, so a fresh navigation to an existing
+   * session sees nothing of the prior task lifecycle. This endpoint
+   * returns every persisted UI-visible event keyed to the session, which
+   * the client groups by `taskId` and seeds into the per-task
+   * `task-event-history` query cache so `HistoricalProcessCard` and
+   * other consumers render immediately without a second round-trip.
+   *
+   * `nextCursor` is opaque (`<ts>:<id>`); pass it back in `since` to
+   * paginate. Returns 404 when the backend has no DB / recorder wired.
+   */
+  getSessionEventHistory: (sessionId: string, opts?: { since?: string; limit?: number }) => {
+    const params = new URLSearchParams();
+    if (opts?.since !== undefined) params.set('since', opts.since);
+    if (opts?.limit !== undefined) params.set('limit', String(opts.limit));
+    const qs = params.toString();
+    return fetchJSON<{
+      sessionId: string;
+      events: Array<{
+        id: string;
+        taskId: string;
+        sessionId?: string;
+        seq: number;
+        eventType: string;
+        payload: Record<string, unknown>;
+        ts: number;
+      }>;
+      nextCursor?: string;
+    }>(`/sessions/${encodeURIComponent(sessionId)}/event-history${qs ? `?${qs}` : ''}`);
+  },
+
   // Approval (A6)
   getPendingApprovals: () => fetchJSON<{ pending: PendingApproval[] }>('/approvals'),
   approveTask: (taskId: string, decision: 'approved' | 'rejected') =>

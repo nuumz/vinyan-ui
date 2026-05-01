@@ -24,8 +24,33 @@ import {
   normalizeReplayedTurnForDisplay,
   selectAuthoritativeCompleteness,
 } from '@/lib/replay-completeness';
+import type { TaskProcessGates } from '@/lib/api-client';
+import type { ActionableGateName } from './interrupt-banner';
 import { ReplayCompletenessBanner } from './replay-completeness-banner';
 import { TurnProcessSurfaces } from './turn-process-surfaces';
+
+/**
+ * Pure helper — derive the set of gates the user can still act on from
+ * the backend projection. A gate is actionable when it is currently
+ * open AND has not yet been resolved (decision recorded server-side).
+ *
+ * This keeps the historical card's "frozen replay" framing in place
+ * for everything BUT the still-open gate, where we override readOnly
+ * so the user can approve / reject / answer / decide directly from the
+ * /tasks drawer Process tab. Without this, an open gate viewed via the
+ * task drawer reports "Read-only — no decision recorded" with no way
+ * to act, forcing a context switch to the chat surface to take action.
+ */
+export function deriveActionableGates(
+  gates: TaskProcessGates | null | undefined,
+): ReadonlySet<ActionableGateName> {
+  const set = new Set<ActionableGateName>();
+  if (!gates) return set;
+  if (gates.approval?.open && !gates.approval.resolved) set.add('approval');
+  if (gates.workflowHumanInput?.open && !gates.workflowHumanInput.resolved) set.add('humanInput');
+  if (gates.partialDecision?.open && !gates.partialDecision.resolved) set.add('partialDecision');
+  return set;
+}
 
 interface HistoricalProcessCardProps {
   taskId: string;
@@ -69,6 +94,21 @@ export function HistoricalProcessCard({ taskId }: HistoricalProcessCardProps) {
     [projection.data, events, unsupported, error],
   );
 
+  // Re-enable action affordances per gate when the backend says the
+  // gate is still open. Prevents the historical card from showing a
+  // dead "Read-only — no decision recorded" frame on a task that's
+  // actually waiting for the user's approve / reject / answer.
+  //
+  // Gated on a known `sessionId` because the workflow approval /
+  // human-input mutations route through `/sessions/:sid/...`. Without
+  // a real sessionId from the projection we would POST to a bogus
+  // route — better to fall back to read-only than fire a 404.
+  const projectionSessionId = projection.data?.lifecycle?.sessionId;
+  const actionableGates = useMemo(
+    () => (projectionSessionId ? deriveActionableGates(projection.data?.gates) : new Set<never>()),
+    [projection.data?.gates, projectionSessionId],
+  );
+
   if (isLoading) {
     return (
       <CardShell>
@@ -105,9 +145,10 @@ export function HistoricalProcessCard({ taskId }: HistoricalProcessCardProps) {
         <TurnProcessSurfaces
           turn={displayTurn}
           mode="historical"
-          sessionId={displayTurn.taskId}
+          sessionId={projectionSessionId ?? displayTurn.taskId}
           nowMs={nowMs}
           defaultExpandStage
+          actionableGates={actionableGates}
         />
       </div>
     </CardShell>

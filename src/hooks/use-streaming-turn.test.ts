@@ -725,6 +725,100 @@ describe('useStreamingTurnStore — bubble lifecycle', () => {
     expect(useStreamingTurnStore.getState().taskSessionIndex['task-99']).toBe('s1');
   });
 
+  test('hydrateRunningTask preserves a replayed awaiting-approval turn on a re-fire', () => {
+    // Reproduces the bug seen on session refresh against a workflow plan
+    // that's parked at the approval gate:
+    //   1) hydrate creates an empty `running` recovered shell.
+    //   2) replayInto reduces the persisted plan_ready event → status
+    //      flips to `awaiting-approval`, pendingApproval populated.
+    //   3) SessionChat's effect re-fires (turn is in its deps) and
+    //      calls hydrate again with the SAME taskId.
+    //
+    // Before this guard, step 3 wiped the replayed turn (because the
+    // narrow `prev.status === 'running'` check missed `awaiting-approval`),
+    // and the recover hook's `lastReplayedRef` then refused to re-run.
+    // The chat stranded on a quiet "Planning · Decomposing" header
+    // forever despite event-history being on disk and fetched.
+    useStreamingTurnStore.getState().hydrateRunningTask('s1', 'task-pending');
+    useStreamingTurnStore.getState().replayInto('s1', 'task-pending', [
+      { eventType: 'task:start', payload: { input: { id: 'task-pending' } }, ts: now },
+      {
+        eventType: 'workflow:plan_ready',
+        payload: {
+          taskId: 'task-pending',
+          goal: 'multi-agent debate',
+          steps: [
+            { id: 'step1', description: 'agent A answers', strategy: 'delegate-sub-agent', dependencies: [] },
+          ],
+          awaitingApproval: true,
+          approvalMode: 'agent-discretion',
+          timeoutMs: 180_000,
+          autoDecisionAllowed: true,
+        },
+        ts: now + 1,
+      },
+    ]);
+
+    const before = useStreamingTurnStore.getState().bySession.s1;
+    expect(before?.status).toBe('awaiting-approval');
+    expect(before?.pendingApproval?.steps.length).toBe(1);
+
+    // Re-fire hydrate (simulates SessionChat's useEffect running again
+    // after `turn` changed in its dep list).
+    useStreamingTurnStore.getState().hydrateRunningTask('s1', 'task-pending');
+
+    const after = useStreamingTurnStore.getState().bySession.s1;
+    expect(after?.status).toBe('awaiting-approval');
+    expect(after?.pendingApproval?.steps.length).toBe(1);
+    expect(after?.pendingApproval?.goal).toBe('multi-agent debate');
+  });
+
+  test('hydrateRunningTask preserves a replayed awaiting-human-input turn on a re-fire', () => {
+    // Same invariant as the approval-gate test, but for the workflow
+    // human-input pause. Without the broader status guard, a turn
+    // paused on a clarification would also lose `pendingHumanInput`
+    // when the SessionChat effect re-fired.
+    useStreamingTurnStore.getState().hydrateRunningTask('s1', 'task-input');
+    useStreamingTurnStore.getState().replayInto('s1', 'task-input', [
+      { eventType: 'task:start', payload: { input: { id: 'task-input' } }, ts: now },
+      {
+        eventType: 'workflow:human_input_needed',
+        payload: { taskId: 'task-input', stepId: 'h1', question: 'Which file should I read?' },
+        ts: now + 1,
+      },
+    ]);
+
+    expect(useStreamingTurnStore.getState().bySession.s1?.status).toBe('awaiting-human-input');
+
+    useStreamingTurnStore.getState().hydrateRunningTask('s1', 'task-input');
+
+    const after = useStreamingTurnStore.getState().bySession.s1;
+    expect(after?.status).toBe('awaiting-human-input');
+    expect(after?.pendingHumanInput?.question).toBe('Which file should I read?');
+  });
+
+  test('hydrateRunningTask resets to fresh empty turn when the taskId changes', () => {
+    // Only the SAME-task path is preserved; a different taskId means
+    // the previous turn is stale (e.g. the user kicked off a new task
+    // in the same session) and the empty shell is the right answer.
+    useStreamingTurnStore.getState().hydrateRunningTask('s1', 'task-A');
+    useStreamingTurnStore.getState().replayInto('s1', 'task-A', [
+      { eventType: 'task:start', payload: { input: { id: 'task-A' } }, ts: now },
+      {
+        eventType: 'workflow:plan_ready',
+        payload: { taskId: 'task-A', goal: 'old', steps: [], awaitingApproval: true },
+        ts: now + 1,
+      },
+    ]);
+    expect(useStreamingTurnStore.getState().bySession.s1?.status).toBe('awaiting-approval');
+
+    useStreamingTurnStore.getState().hydrateRunningTask('s1', 'task-B');
+    const after = useStreamingTurnStore.getState().bySession.s1;
+    expect(after?.taskId).toBe('task-B');
+    expect(after?.status).toBe('running');
+    expect(after?.pendingApproval).toBeUndefined();
+  });
+
   test('replayInto folds persisted events into a recovered turn (stage card restored)', () => {
     // Simulate the bug scenario: browser refresh during a running task,
     // then `useRecoverTurnHistory` fetches the persisted event log.

@@ -748,7 +748,26 @@ export const useStreamingTurnStore = create<StreamingTurnState>((set) => ({
     set((s) => {
       const prev = s.bySession[sessionId];
       const nextIndex = { ...s.taskSessionIndex, [taskId]: sessionId };
-      if (prev?.status === 'running' && prev.taskId === taskId) {
+      // Preserve an existing turn for the SAME task whenever it's still
+      // in flight — running, paused at the workflow approval gate,
+      // paused at a workflow human-input gate, or awaiting a top-level
+      // clarification. Resetting to a fresh empty turn here would wipe
+      // the post-replay state (status / pendingApproval / pendingHumanInput
+      // / decisionStage) that `useRecoverTurnHistory` just installed.
+      // Reproduces as: refresh → hydrate → replay sets awaiting-approval
+      // → SessionChat's useEffect re-fires (turn is in its deps) → this
+      // function would have rebuilt the empty turn (because status no
+      // longer matches the narrow `'running'` check) → replay's
+      // `lastReplayedRef` guard then refuses to re-run, so the chat
+      // strands on a quiet "Planning · Decomposing" header forever.
+      if (
+        prev &&
+        prev.taskId === taskId &&
+        (prev.status === 'running' ||
+          prev.status === 'awaiting-approval' ||
+          prev.status === 'awaiting-human-input' ||
+          prev.status === 'input-required')
+      ) {
         return { taskSessionIndex: nextIndex };
       }
       return {
