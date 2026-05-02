@@ -434,6 +434,40 @@ export interface TaskResult {
   thinking?: string;
   escalationReason?: string;
   clarificationNeeded?: string[];
+  /**
+   * Phase C — structured clarification questions with smart-gate
+   * annotations (suggestedDefault / rationale / trendingHint). When
+   * present, the UI should render rich option chips with badges + tooltips
+   * instead of falling back to plain text from `clarificationNeeded`.
+   * Older clients that only read `clarificationNeeded` keep working —
+   * the orchestrator emits both fields.
+   */
+  structuredClarifications?: ClarificationQuestion[];
+}
+
+/**
+ * Per-option choice in a structured clarification question. Mirrors the
+ * orchestrator's `ClarificationOption` type so the SSE payload round-trips
+ * without re-shaping. Smart-gate fields (`suggestedDefault` / `rationale`
+ * / `trendingHint`) are optional and absent on legacy events.
+ */
+export interface ClarificationOption {
+  id: string;
+  label: string;
+  hint?: string;
+  suggestedDefault?: boolean;
+  rationale?: string;
+  trendingHint?: string;
+}
+
+export interface ClarificationQuestion {
+  id: string;
+  prompt: string;
+  kind: 'single' | 'multi' | 'free';
+  options?: ClarificationOption[];
+  allowFreeText: boolean;
+  maxSelections?: number;
+  questionRationale?: string;
 }
 
 export interface OracleVerdict {
