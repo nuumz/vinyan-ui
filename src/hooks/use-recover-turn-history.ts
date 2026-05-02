@@ -10,41 +10,41 @@
  * `task:stage_update` that set the stage card) are persisted in
  * `task_events` but invisible to a fresh subscriber.
  *
+ * Cache sharing. Reads through `useTaskEvents` so the
+ * `['task-event-history', taskId]` cache is shared with the rest of
+ * the app — if `useSessionEventHistory` already seeded the per-task
+ * slice on session mount, this hook becomes a cache read with no
+ * network round-trip. The `prefetchSettled` gate keeps it from
+ * firing its own fetch while the session-level prefetch is still in
+ * flight (otherwise both endpoints would race and both would land,
+ * doubling bandwidth for the same data).
+ *
  * Disabled when there's no recovered turn — a freshly-started turn
  * is owned by live SSE and the POST stream from `useSendMessage`.
  */
 import { useEffect, useRef } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { api } from '@/lib/api-client';
 import { useStreamingTurnStore } from '@/hooks/use-streaming-turn';
+import { useTaskEvents } from '@/hooks/use-task-events';
 
-export function useRecoverTurnHistory(sessionId: string | null, taskId: string | null, recovered: boolean) {
+export function useRecoverTurnHistory(
+  sessionId: string | null,
+  taskId: string | null,
+  recovered: boolean,
+  prefetchSettled: boolean,
+) {
   const replayInto = useStreamingTurnStore((s) => s.replayInto);
   const lastReplayedRef = useRef<string | null>(null);
 
-  const enabled = Boolean(sessionId && taskId && recovered);
-  const query = useQuery({
-    queryKey: ['recovered-turn-history', taskId],
-    queryFn: () => api.getTaskEventHistory(taskId!),
-    enabled,
-    // We want fresh data on mount/refresh — this is the whole point.
-    // refetchOnWindowFocus stays off so a tab-back during a running
-    // task does NOT re-replay (live SSE owns updates from then on,
-    // and the `lastReplayedRef` guard would skip the call anyway).
-    staleTime: 0,
-    refetchOnWindowFocus: false,
-    // 404 = backend has no recorder wired (no DB or recorder disabled).
-    // Treat as "no history available" rather than red-error UI.
-    retry: (failureCount, err) => {
-      const status = (err as { status?: number } | undefined)?.status;
-      if (status === 404) return false;
-      return failureCount < 2;
-    },
-  });
+  // Gate on `prefetchSettled` so we don't race the session-level
+  // prefetch. The prefetch seeds the same cache (`task-event-history`),
+  // so once it lands we read from cache instead of firing a duplicate
+  // network call. `prefetchSettled` flips true on success, 404, or
+  // error — we never wait forever; we just defer one tick.
+  const enabled = Boolean(sessionId && taskId && recovered && prefetchSettled);
+  const { events } = useTaskEvents(taskId ?? undefined, { enabled });
 
   useEffect(() => {
     if (!sessionId || !taskId) return;
-    const events = query.data?.events;
     if (!events || events.length === 0) return;
     // Replay once per (session, task). A new running task on the same
     // session creates a different recovered turn (different taskId),
@@ -53,5 +53,5 @@ export function useRecoverTurnHistory(sessionId: string | null, taskId: string |
     if (lastReplayedRef.current === key) return;
     lastReplayedRef.current = key;
     replayInto(sessionId, taskId, events);
-  }, [sessionId, taskId, query.data, replayInto]);
+  }, [sessionId, taskId, events, replayInto]);
 }

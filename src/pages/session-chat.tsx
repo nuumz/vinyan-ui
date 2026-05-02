@@ -73,7 +73,12 @@ export default function SessionChat() {
   // only fire when a `HistoricalProcessCard` mounts — so a fresh nav
   // back to an existing session shows nothing of the prior workflow
   // timeline (plan / steps / sub-agents) until the user expands a card.
-  useSessionEventHistory(sessionId);
+  //
+  // `useRecoverTurnHistory` (further down) is gated on this prefetch
+  // settling so the two endpoints don't race and both land — doubling
+  // bandwidth for the same data. The gate releases on success, 404, or
+  // error; the recovery hook is never blocked indefinitely.
+  const sessionPrefetch = useSessionEventHistory(sessionId);
   const turn = useStreamingTurn(sessionId);
   const clearTurn = useStreamingTurnStore((s) => s.clear);
   const hydrateRunningTask = useStreamingTurnStore((s) => s.hydrateRunningTask);
@@ -205,7 +210,16 @@ export default function SessionChat() {
   // "Planning · Decomposing" stage card) never replay. This hook
   // fetches the persisted event log and folds it through the same
   // reducer the live SSE path uses, restoring the on-screen state.
-  useRecoverTurnHistory(sessionId, turn?.taskId ?? null, Boolean(turn?.recovered));
+  //
+  // Gated on `!sessionPrefetch.isLoading` so the recover hook reads
+  // from the cache the prefetch seeded instead of firing its own
+  // duplicate `GET /tasks/:id/event-history` against the same data.
+  useRecoverTurnHistory(
+    sessionId,
+    turn?.taskId ?? null,
+    Boolean(turn?.recovered),
+    !sessionPrefetch.isLoading,
+  );
 
   useEffect(() => {
     if (!sessionId) return;

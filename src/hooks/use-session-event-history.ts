@@ -25,7 +25,6 @@
  * recovery path takes over after the initial seed — this hook is
  * deliberately a one-shot prefetch, not a live subscription.
  */
-import { useEffect } from 'react';
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api-client';
 
@@ -108,7 +107,29 @@ export function useSessionEventHistory(sessionId: string | null): UseSessionEven
 
   const query = useQuery({
     queryKey: ['session-event-history', sessionId],
-    queryFn: () => api.getSessionEventHistory(sessionId!),
+    // Seeding the per-task cache MUST happen inside `queryFn`, not in a
+    // useEffect. React-query flips `isLoading` to false synchronously
+    // after `queryFn` resolves; consumers gated on `!isLoading` (e.g.
+    // `useRecoverTurnHistory`) re-render in the same tick and call
+    // `useTaskEvents`, which checks the per-task cache. If the seed
+    // ran in a useEffect (which fires AFTER commit), `useTaskEvents`
+    // would see an empty cache on that tick and fire its own duplicate
+    // network call before the seed lands. By seeding inside queryFn
+    // we guarantee the cache is hot before any consumer observes
+    // `isLoading: false`.
+    queryFn: async () => {
+      const data = await api.getSessionEventHistory(sessionId!);
+      try {
+        if (data.events.length > 0) {
+          seedTaskCachesFromSessionEvents(queryClient, data.events);
+        }
+      } catch {
+        // Seeding is best-effort. Per-task consumers can still fetch
+        // on demand if the seed throws — failing the query here would
+        // hide the data we already successfully retrieved.
+      }
+      return data;
+    },
     enabled,
     // Past events are immutable — long stale window, no refocus refetch.
     // Once seeded, per-task consumers read from cache; for still-running
@@ -121,13 +142,6 @@ export function useSessionEventHistory(sessionId: string | null): UseSessionEven
       return failureCount < 2;
     },
   });
-
-  useEffect(() => {
-    if (!sessionId) return;
-    const events = query.data?.events;
-    if (!events || events.length === 0) return;
-    seedTaskCachesFromSessionEvents(queryClient, events);
-  }, [sessionId, query.data, queryClient]);
 
   const status = (query.error as { status?: number } | undefined)?.status;
   const eventCount = query.data?.events.length ?? 0;

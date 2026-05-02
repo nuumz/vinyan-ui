@@ -1665,11 +1665,12 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
       };
     }
     case 'workflow:plan_ready': {
-      // Phase E: workflow executor pauses with `awaitingApproval=true` for
-      // long-form goals. Surface the plan inline so the user can approve /
-      // reject without leaving the chat. Skip the gate when not awaiting —
-      // execution is already underway, the steps will arrive via
-      // `agent:plan_update`.
+      // Phase E: workflow executor emits this both for the awaiting-approval
+      // gate (`awaitingApproval=true`) AND immediately after auto-approving
+      // a non-gated plan (`awaitingApproval=false`). Both cases need to
+      // populate `turn.planSteps` so the chat surfaces (PlanSurface,
+      // AgentTimelineCard) render the workflow plan — the approval gate
+      // adds `pendingApproval` on top.
       // Sub-task isolation: a delegate-sub-agent that runs its own
       // workflow could emit its own `plan_ready` event. The backend
       // approval gate already bypasses for sub-tasks (`!input.parentTaskId`)
@@ -1680,23 +1681,72 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
       if (eventTaskId && turn.taskId && eventTaskId !== turn.taskId) {
         return turn;
       }
-      const awaiting = p.awaitingApproval === true;
-      if (!awaiting) return turn;
       const taskId = (p.taskId as string | undefined) ?? turn.taskId;
       const goal = (p.goal as string | undefined) ?? '';
       const rawSteps = Array.isArray(p.steps) ? (p.steps as unknown[]) : [];
       const steps: PendingApproval['steps'] = [];
+      // Parsed plan view used to seed `turn.planSteps`. Carries `agentId`
+      // (when supplied) so the chat surfaces can pin the persona before
+      // delegate_dispatched fires.
+      const parsedSteps: Array<{
+        id: string;
+        description: string;
+        strategy: string;
+        dependencies: string[];
+        agentId?: string;
+      }> = [];
       for (const s of rawSteps) {
         if (!s || typeof s !== 'object') continue;
         const o = s as Record<string, unknown>;
         const id = typeof o.id === 'string' ? o.id : undefined;
         const description = typeof o.description === 'string' ? o.description : undefined;
         const strategy = typeof o.strategy === 'string' ? o.strategy : 'auto';
+        const agentId = typeof o.agentId === 'string' ? o.agentId : undefined;
         if (!id || !description) continue;
         const deps = Array.isArray(o.dependencies)
           ? (o.dependencies as unknown[]).filter((d): d is string => typeof d === 'string')
           : [];
         steps.push({ id, description, strategy, dependencies: deps });
+        parsedSteps.push({ id, description, strategy, dependencies: deps, ...(agentId ? { agentId } : {}) });
+      }
+      // Populate / merge `turn.planSteps`. Preserve any per-step state
+      // (toolCallIds, timings, terminal status) already collected from
+      // upstream events (delegate_dispatched / step_start / agent:plan_update).
+      // PlanStep uses `label` while the workflow event uses `description`
+      // — map across the boundary.
+      const nextPlanSteps: PlanStep[] =
+        parsedSteps.length > 0
+          ? parsedSteps.map((s) => {
+              const prev = turn.planSteps.find((ps) => ps.id === s.id);
+              return {
+                id: s.id,
+                label: s.description,
+                status: prev?.status ?? 'pending',
+                toolCallIds: prev?.toolCallIds ?? [],
+                ...(prev?.startedAt !== undefined ? { startedAt: prev.startedAt } : {}),
+                ...(prev?.finishedAt !== undefined ? { finishedAt: prev.finishedAt } : {}),
+                ...(s.strategy ? { strategy: s.strategy } : {}),
+                ...(s.agentId
+                  ? { agentId: s.agentId }
+                  : prev?.agentId
+                    ? { agentId: prev.agentId }
+                    : {}),
+                ...(prev?.outputPreview ? { outputPreview: prev.outputPreview } : {}),
+                ...(prev?.subTaskId ? { subTaskId: prev.subTaskId } : {}),
+              };
+            })
+          : turn.planSteps;
+      const subTaskIdIndex: Record<string, string> = { ...turn.subTaskIdIndex };
+      for (const step of nextPlanSteps) {
+        if (step.subTaskId) subTaskIdIndex[step.subTaskId] = step.id;
+      }
+      const awaiting = p.awaitingApproval === true;
+      if (!awaiting) {
+        // Auto-approved plan — surface the plan in the chat without
+        // pausing the turn. The executor will dispatch steps next; the
+        // delegate_dispatched / step_start handlers will flip individual
+        // step status from `pending` → `running` against this seed.
+        return { ...turn, taskId, planSteps: nextPlanSteps, subTaskIdIndex };
       }
       const approvalMode =
         p.approvalMode === 'human-required' || p.approvalMode === 'agent-discretion'
@@ -1711,6 +1761,8 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
         ...turn,
         taskId,
         status: 'awaiting-approval',
+        planSteps: nextPlanSteps,
+        subTaskIdIndex,
         pendingApproval: {
           taskId,
           goal,

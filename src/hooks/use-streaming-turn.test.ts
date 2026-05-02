@@ -797,6 +797,170 @@ describe('useStreamingTurnStore — bubble lifecycle', () => {
     expect(after?.pendingHumanInput?.question).toBe('Which file should I read?');
   });
 
+  test('plan_ready (awaiting=false) populates planSteps so the chat surfaces render', () => {
+    // Auto-approved multi-agent workflows emit `plan_ready` with
+    // `awaitingApproval: false` and never re-emit the steps via
+    // `agent:plan_update`. Before this fix the reducer early-returned
+    // on awaiting=false → `turn.planSteps` stayed empty →
+    // `delegate_dispatched`'s .map no-op'd against empty steps →
+    // `hasDelegateRows=false` in the surface policy → AgentTimelineCard /
+    // PlanSurface never rendered → chat bubble stranded on
+    // "Planning · Decomposing the task" forever.
+    useStreamingTurnStore.getState().start('s1');
+    useStreamingTurnStore.getState().ingest('s1', ev('task:start', { input: { id: 'task-mw' } }));
+    useStreamingTurnStore
+      .getState()
+      .ingest(
+        's1',
+        ev('workflow:plan_ready', {
+          taskId: 'task-mw',
+          goal: 'multi-agent debate',
+          steps: [
+            {
+              id: 'p-architect',
+              description: 'architect answers',
+              strategy: 'delegate-sub-agent',
+              dependencies: [],
+              agentId: 'architect',
+            },
+            {
+              id: 'p-author',
+              description: 'author answers',
+              strategy: 'delegate-sub-agent',
+              dependencies: [],
+              agentId: 'author',
+            },
+            {
+              id: 'p-coordinator',
+              description: 'coordinator synthesizes',
+              strategy: 'llm-reasoning',
+              dependencies: ['p-architect', 'p-author'],
+            },
+          ],
+          awaitingApproval: false,
+        }),
+      );
+
+    const turn = useStreamingTurnStore.getState().bySession.s1;
+    expect(turn?.planSteps).toHaveLength(3);
+    expect(turn?.planSteps[0]).toMatchObject({
+      id: 'p-architect',
+      label: 'architect answers',
+      status: 'pending',
+      strategy: 'delegate-sub-agent',
+      agentId: 'architect',
+    });
+    // Auto-approved means status stays at the live signal, NOT awaiting-approval.
+    expect(turn?.status).not.toBe('awaiting-approval');
+    expect(turn?.pendingApproval).toBeUndefined();
+  });
+
+  test('plan_ready (awaiting=true) populates planSteps AND pendingApproval', () => {
+    // Both surfaces should reflect the gate: pendingApproval drives the
+    // approval card (Approve / Reject buttons), planSteps drives the
+    // plan checklist + agent timeline. They were two independent slices
+    // before; this test pins their co-population so a future regression
+    // that bails early on awaiting=true would surface immediately.
+    useStreamingTurnStore.getState().start('s1');
+    useStreamingTurnStore.getState().ingest('s1', ev('task:start', { input: { id: 'task-aw' } }));
+    useStreamingTurnStore
+      .getState()
+      .ingest(
+        's1',
+        ev('workflow:plan_ready', {
+          taskId: 'task-aw',
+          goal: 'gated workflow',
+          steps: [
+            {
+              id: 's1',
+              description: 'first step',
+              strategy: 'delegate-sub-agent',
+              dependencies: [],
+            },
+          ],
+          awaitingApproval: true,
+          approvalMode: 'agent-discretion',
+          timeoutMs: 60_000,
+          autoDecisionAllowed: true,
+        }),
+      );
+
+    const turn = useStreamingTurnStore.getState().bySession.s1;
+    expect(turn?.status).toBe('awaiting-approval');
+    expect(turn?.planSteps).toHaveLength(1);
+    expect(turn?.planSteps[0]?.label).toBe('first step');
+    expect(turn?.pendingApproval?.steps).toHaveLength(1);
+    expect(turn?.pendingApproval?.approvalMode).toBe('agent-discretion');
+    expect(turn?.pendingApproval?.timeoutMs).toBe(60_000);
+  });
+
+  test('plan_ready merges with previously dispatched delegate steps (preserves agentId/subTaskId)', () => {
+    // delegate_dispatched can fire BEFORE plan_ready in race conditions
+    // (e.g. the executor batched the events and the wire ordered them
+    // out of seq order). The plan_ready merger must not clobber the
+    // agentId / subTaskId / status the dispatch handler already set.
+    useStreamingTurnStore.getState().start('s1');
+    useStreamingTurnStore.getState().ingest('s1', ev('task:start', { input: { id: 'task-merge' } }));
+    // Seed a pre-existing step via delegate_dispatched (this requires a
+    // step to already exist — but to test merge isolation, use a manual
+    // ingest of plan_ready FIRST without agentId, then dispatch overrides).
+    useStreamingTurnStore
+      .getState()
+      .ingest(
+        's1',
+        ev('workflow:plan_ready', {
+          taskId: 'task-merge',
+          goal: 'test merge',
+          steps: [
+            {
+              id: 'p-step1',
+              description: 'first step',
+              strategy: 'delegate-sub-agent',
+              dependencies: [],
+            },
+          ],
+          awaitingApproval: false,
+        }),
+      );
+    useStreamingTurnStore
+      .getState()
+      .ingest(
+        's1',
+        ev('workflow:delegate_dispatched', {
+          taskId: 'task-merge',
+          stepId: 'p-step1',
+          agentId: 'researcher',
+          subTaskId: 'task-merge__sub__r0',
+        }),
+      );
+    // Now plan_ready re-arrives (recovery replay scenario). Dispatch
+    // state from before MUST be preserved.
+    useStreamingTurnStore
+      .getState()
+      .ingest(
+        's1',
+        ev('workflow:plan_ready', {
+          taskId: 'task-merge',
+          goal: 'test merge',
+          steps: [
+            {
+              id: 'p-step1',
+              description: 'first step',
+              strategy: 'delegate-sub-agent',
+              dependencies: [],
+            },
+          ],
+          awaitingApproval: false,
+        }),
+      );
+
+    const turn = useStreamingTurnStore.getState().bySession.s1;
+    const step = turn?.planSteps.find((s) => s.id === 'p-step1');
+    expect(step?.agentId).toBe('researcher');
+    expect(step?.subTaskId).toBe('task-merge__sub__r0');
+    expect(step?.status).toBe('running');
+  });
+
   test('hydrateRunningTask resets to fresh empty turn when the taskId changes', () => {
     // Only the SAME-task path is preserved; a different taskId means
     // the previous turn is stale (e.g. the user kicked off a new task
