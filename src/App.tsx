@@ -36,6 +36,9 @@ const Federation = lazy(() => import('./pages/federation'));
 const Market = lazy(() => import('./pages/market'));
 const Scheduler = lazy(() => import('./pages/scheduler'));
 const SkillProposals = lazy(() => import('./pages/skill-proposals'));
+// Phase 3: A8 audit URLs. Single page component; scope chosen by the
+// route param shape via `scopeKind`.
+const AuditViewPage = lazy(() => import('./pages/audit-view-page'));
 
 function Loading() {
   return <div className="text-text-dim text-sm">Loading...</div>;
@@ -79,6 +82,22 @@ export default function App() {
             <Route path="/market" element={<Market />} />
             <Route path="/scheduler" element={<Scheduler />} />
             <Route path="/skill-proposals" element={<SkillProposals />} />
+            {/* A8 audit URLs (Phase 3). Five entry points under /audit/* to
+                avoid colliding with /sessions/:id (chat) and /tasks (list). */}
+            <Route path="/audit/sessions/:sid" element={<AuditViewPage scopeKind="session" />} />
+            <Route
+              path="/audit/sessions/:sid/workflows/:wid"
+              element={<AuditViewPage scopeKind="workflow" />}
+            />
+            <Route path="/audit/tasks/:tid" element={<AuditViewPage scopeKind="task" />} />
+            <Route
+              path="/audit/tasks/:tid/subtasks/:stid"
+              element={<AuditViewPage scopeKind="subtask" />}
+            />
+            <Route
+              path="/audit/tasks/:tid/subagents/:said"
+              element={<AuditViewPage scopeKind="subagent" />}
+            />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>

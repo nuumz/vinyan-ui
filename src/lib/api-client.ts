@@ -404,7 +404,8 @@ export type AuditEvidenceRef =
   | { type: 'fact'; factId: string; sha256: string }
   | { type: 'event'; eventId: string }
   | { type: 'verdict'; verdictId: string }
-  | { type: 'tool_result'; auditEntryId: string };
+  | { type: 'tool_result'; auditEntryId: string }
+  | { type: 'subagent_output'; subAgentId: string; outputHash: string };
 
 export interface AuditEntryWrapperFields {
   id: string;
@@ -413,18 +414,31 @@ export interface AuditEntryWrapperFields {
   turn?: string;
   ts: number;
   policyVersion: string;
-  schemaVersion: 1;
+  /** Phase 2.2 reader accepts both v1 (legacy) and v2 (Phase 2 expansion). */
+  schemaVersion: 1 | 2;
   actor: AuditActorRef;
   evidenceRefs?: AuditEvidenceRef[];
   redactionPolicyHash?: string;
+  // ── Hierarchy ids (Phase 2.7) ──────────────────────────────────────
+  sessionId?: string;
+  /** Documentation alias for taskId; Vinyan does not maintain a separate workflow id. */
+  workflowId?: string;
+  subTaskId?: string;
+  subAgentId?: string;
 }
 
 export type AuditEntry = AuditEntryWrapperFields &
   (
-    | { kind: 'thought'; content: string; trigger?: 'pre-tool' | 'post-tool' | 'plan' | 'reflect'; tokenCount?: number }
+    | {
+        kind: 'thought';
+        content: string;
+        trigger?: 'pre-tool' | 'post-tool' | 'plan' | 'reflect' | 'compaction';
+        tokenCount?: number;
+        closedBy?: string;
+      }
     | {
         kind: 'tool_call';
-        lifecycle: 'executed' | 'failed' | 'retried';
+        lifecycle: 'proposed' | 'authorized' | 'denied' | 'executed' | 'failed' | 'retried';
         toolId: string;
         toolVersion?: string;
         argsHash: string;
@@ -433,6 +447,8 @@ export type AuditEntry = AuditEntryWrapperFields &
         resultRedacted?: unknown;
         latencyMs?: number;
         retryOf?: string;
+        denyReason?: string;
+        capabilityTokenId?: string;
       }
     | {
         kind: 'decision';
@@ -472,6 +488,22 @@ export type AuditEntry = AuditEntryWrapperFields &
         subAgentId?: string;
       }
     | {
+        kind: 'subtask';
+        subTaskId: string;
+        phase: 'spawn' | 'progress' | 'return' | 'cancel';
+        outputHash?: string;
+      }
+    | {
+        kind: 'subagent';
+        subAgentId: string;
+        phase: 'spawn' | 'return' | 'cancel';
+        persona?: string;
+        capabilityTokenId?: string;
+        budgetMs?: number;
+        outputHash?: string;
+      }
+    | {
+        // Legacy variant — still parses for v1 rows. New emits use `subagent`.
         kind: 'delegate';
         phase: 'spawn' | 'return' | 'cancel';
         subAgentId: string;
@@ -479,6 +511,23 @@ export type AuditEntry = AuditEntryWrapperFields &
         capabilityToken?: string;
         budgetMs?: number;
         outputHash?: string;
+      }
+    | {
+        kind: 'workflow';
+        phase: 'planned' | 'started' | 'paused' | 'resumed' | 'completed' | 'failed';
+        planHash?: string;
+      }
+    | {
+        kind: 'session';
+        phase:
+          | 'created'
+          | 'message'
+          | 'archived'
+          | 'unarchived'
+          | 'deleted'
+          | 'compacted'
+          | 'restored'
+          | 'purged';
       }
     | {
         kind: 'gate';
@@ -493,6 +542,7 @@ export type AuditEntry = AuditEntryWrapperFields &
         contentRedactedPreview: string;
         assembledFromStepIds: string[];
         assembledFromDelegateIds: string[];
+        assembledFromSubAgentIds?: string[];
       }
   );
 
@@ -503,6 +553,10 @@ export type AuditSection =
   | 'verdicts'
   | 'planSteps'
   | 'delegates'
+  | 'subTasks'
+  | 'subAgents'
+  | 'workflowEvents'
+  | 'sessionEvents'
   | 'gates'
   | 'finals';
 
@@ -513,8 +567,20 @@ export interface TaskProcessAuditBySection {
   verdicts: AuditEntry[];
   planSteps: AuditEntry[];
   delegates: AuditEntry[];
+  subTasks: AuditEntry[];
+  subAgents: AuditEntry[];
+  workflowEvents: AuditEntry[];
+  sessionEvents: AuditEntry[];
   gates: AuditEntry[];
   finals: AuditEntry[];
+}
+
+export interface TaskProcessByEntity {
+  sessionId?: string;
+  workflowId?: string;
+  taskId: string;
+  subTaskIds: string[];
+  subAgentIds: string[];
 }
 
 export interface TaskProcessProvenance {
@@ -522,6 +588,7 @@ export interface TaskProcessProvenance {
   modelIds: string[];
   oracleIds: string[];
   promptHashes: string[];
+  capabilityTokenIds: string[];
 }
 
 export type TaskProcessSectionCompletenessKind = 'complete' | 'partial' | 'unclassifiable';
@@ -545,6 +612,8 @@ export interface TaskProcessProjection {
   auditLog?: AuditEntry[];
   /** Per-section grouping mirroring `auditLog`. */
   bySection?: TaskProcessAuditBySection;
+  /** Phase 2.7: id rollup for hierarchy navigation. */
+  byEntity?: TaskProcessByEntity;
   /** Provenance roll-up across the audit log. */
   provenance?: TaskProcessProvenance;
   /** Per-section completeness — honest signals only. */

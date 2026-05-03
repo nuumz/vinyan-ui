@@ -144,11 +144,21 @@ export function TurnProcessSurfaces({
  */
 function AuditViewMount({ taskId, mode }: { taskId: string; mode: TurnProcessMode }) {
   const live = mode === 'live';
-  const audit = useAuditProjection(taskId, {
-    enabled: true,
-    staleTimeMs: live ? 5_000 : 5 * 60_000,
-    refetchIntervalMs: live ? 7_000 : false,
-  });
+  const audit = useAuditProjection(
+    { kind: 'task', taskId },
+    {
+      enabled: true,
+      staleTimeMs: live ? 5_000 : 5 * 60_000,
+      refetchIntervalMs: live ? 7_000 : false,
+    },
+  );
   if (!audit.hasAuditData) return null;
-  return <AuditView auditLog={audit.auditLog} completenessBySection={audit.completenessBySection} />;
+  return (
+    <AuditView
+      auditLog={audit.auditLog}
+      completenessBySection={audit.completenessBySection}
+      provenance={audit.provenance}
+      byEntity={audit.byEntity}
+    />
+  );
 }
