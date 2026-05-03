@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useLayoutEffect, useMemo, useState, useRef } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useState, useRef } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useSessionMessages, useSendMessage } from '@/hooks/use-chat';
 import { useStreamingTurn, useStreamingTurnStore } from '@/hooks/use-streaming-turn';
@@ -27,10 +27,7 @@ import {
   Send,
   Trash2,
 } from 'lucide-react';
-import { HistoricalProcessCard } from '@/components/chat/historical-process-card';
-import { MessageBubble } from '@/components/chat/message-bubble';
-import { StreamingBubble } from '@/components/chat/streaming-bubble';
-import { TaskApprovalCard } from '@/components/chat/task-approval-card';
+import { SessionTimeline } from '@/components/chat/session-timeline';
 import { ActionMenu, type ActionMenuItem } from '@/components/ui/action-menu';
 import { ConfirmDialog } from '@/components/ui/confirm';
 import {
@@ -385,76 +382,22 @@ export default function SessionChat() {
         onCompact={() => setConfirm('compact')}
       />
 
-      <div className="flex-1 overflow-auto px-4 py-4 space-y-4">
-        {visibleMessages.length === 0 && !showStreaming && (
-          <div className="text-text-dim text-sm text-center py-12 space-y-2">
-            {session?.source === 'api' && (session?.taskCount ?? 0) > 0 ? (
-              <>
-                <div>This session was auto-created by the async-task API.</div>
-                <div className="text-xs">
-                  It holds {session.taskCount} task{session.taskCount === 1 ? '' : 's'} but no chat
-                  turns — view them on the{' '}
-                  <a href="/tasks" className="text-accent hover:underline">
-                    Tasks page
-                  </a>
-                  .
-                </div>
-              </>
-            ) : (
-              <div>Send a message to start the conversation</div>
-            )}
-          </div>
-        )}
-
-        {visibleMessages.map((msg) => {
-          // For agentic-workflow assistant messages, render the persisted
-          // process card as its own bubble ABOVE the response bubble. The
-          // user explicitly asked for the process box to remain visible
-          // after completion (showing plan + sub-agent activity) AND for
-          // the response to appear as a separate new card. Without this,
-          // the process detail disappears when the streaming bubble
-          // resolves into a single chat bubble that hides the process
-          // behind a click-to-expand button.
-          const showProcessSibling =
-            msg.role === 'assistant' &&
-            !!msg.taskId &&
-            msg.traceSummary?.approach === 'agentic-workflow';
-          return (
-            <Fragment key={`${msg.role}-${msg.timestamp}-${msg.taskId}`}>
-              {showProcessSibling && (
-                <div className="flex justify-start">
-                  <div className="max-w-[88%] w-full">
-                    <HistoricalProcessCard taskId={msg.taskId} />
-                  </div>
-                </div>
-              )}
-              <MessageBubble message={msg} />
-            </Fragment>
-          );
-        })}
-
-        {showStreaming && turn && sessionId && (
-          <StreamingBubble
-            turn={turn}
-            sessionId={sessionId}
-            nowMs={nowMs}
-            onRetry={handleRetry}
-          />
-        )}
-
-        {sessionApprovals.length > 0 && (
-          <div className="space-y-2">
-            {sessionApprovals.map((a) => (
-              <TaskApprovalCard
-                key={a.approvalId ?? `${a.taskId}:${a.approvalKey ?? 'default'}`}
-                pending={a}
-              />
-            ))}
-          </div>
-        )}
-
-        <div ref={bottomRef} />
-      </div>
+      {sessionId && (
+        <SessionTimeline
+          sessionId={sessionId}
+          session={session}
+          visibleMessages={visibleMessages}
+          turn={turn}
+          showStreaming={showStreaming}
+          nowMs={nowMs}
+          sessionApprovals={sessionApprovals}
+          sessionTasks={(tasksQuery.data?.tasks ?? []).filter((t) => t.sessionId === sessionId)}
+          pendingClarifications={pendingClarifications}
+          emptyState={{ source: session?.source, taskCount: session?.taskCount }}
+          onRetry={handleRetry}
+          bottomRef={bottomRef}
+        />
+      )}
 
       <div className="shrink-0 px-4 pb-4 pt-2">
         <div

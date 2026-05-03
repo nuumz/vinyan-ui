@@ -18,17 +18,18 @@
  * `useTaskEvents` + `replayProcessLog`.
  */
 import { useMemo } from 'react';
+import { useAuditProjection } from '@/hooks/use-audit-projection';
 import type { StreamingTurn } from '@/hooks/use-streaming-turn';
 import { buildTurnSurfaceRenderPolicy, type TurnSurfaceMode } from '@/lib/turn-surface-policy';
-import { AgentTimelineCard } from './agent-timeline-card';
+import { AgentRosterCard } from './agent-roster-card';
+import { AuditView } from './audit-view';
 import { CodingCliCard } from './coding-cli-card';
 import { DiagnosticsDrawer } from './diagnostics-drawer';
 import { FinalAnswer } from './final-answer';
 import { InterruptBanner, type ActionableGateName } from './interrupt-banner';
 import { PartialDecisionCard } from './partial-decision-card';
 import { PlanSurface } from './plan-surface';
-import { ProcessTimeline } from './process-timeline';
-import { StageManifestSurface } from './stage-manifest-surface';
+import { TimelineHistory } from './timeline-history';
 import { TurnHeader } from './turn-header';
 
 export type TurnProcessMode = TurnSurfaceMode;
@@ -47,16 +48,6 @@ interface TurnProcessSurfacesProps {
   nowMs: number;
   /** Live mode only — passed to InterruptBanner for retry on errored turns. */
   onRetry?: () => void;
-  /**
-   * Historical mode hint — start the stage manifest disclosed so the past
-   * task's plan is visible without an extra click. Live mode keeps it
-   * collapsed by default to avoid pushing the live work down the bubble.
-   *
-   * When set, forces stage manifest open even if the policy's default-open
-   * set didn't include it (e.g. a caller wants the panel pre-expanded for
-   * a debug drilldown). Leave undefined to defer to the policy.
-   */
-  defaultExpandStage?: boolean;
   /**
    * Historical mode override — gates the backend projection reports as
    * still open (`gate.open && !gate.resolved`). Forwarded to
@@ -79,27 +70,26 @@ export function TurnProcessSurfaces({
   sessionId,
   nowMs,
   onRetry,
-  defaultExpandStage,
   actionableGates,
 }: TurnProcessSurfacesProps) {
   const readOnly = mode === 'historical';
   const policy = useMemo(() => buildTurnSurfaceRenderPolicy(turn, mode), [turn, mode]);
   const showPartialDecision =
     !!turn.pendingPartialDecision && (readOnly || turn.status === 'awaiting-human-input');
-  const stageOpen =
-    defaultExpandStage ?? policy.defaultOpenSections.has('stageManifest');
   const partialDecisionReadOnly = readOnly && !(actionableGates?.has('partialDecision') ?? false);
 
   return (
     <>
       <TurnHeader turn={turn} nowMs={nowMs} />
-      <InterruptBanner
-        turn={turn}
-        sessionId={sessionId}
-        onRetry={readOnly ? undefined : onRetry}
-        readOnly={readOnly}
-        actionableGates={actionableGates}
-      />
+      <div id="interrupt-banner">
+        <InterruptBanner
+          turn={turn}
+          sessionId={sessionId}
+          onRetry={readOnly ? undefined : onRetry}
+          readOnly={readOnly}
+          actionableGates={actionableGates}
+        />
+      </div>
       {showPartialDecision && (
         <PartialDecisionCard
           sessionId={sessionId}
@@ -109,11 +99,9 @@ export function TurnProcessSurfaces({
           readOnly={partialDecisionReadOnly}
         />
       )}
-      {policy.showStageManifest && (
-        <StageManifestSurface turn={turn} defaultExpanded={stageOpen} />
-      )}
       {policy.showAgentTimeline && (
-        <AgentTimelineCard
+        <div id="agentroster">
+          <AgentRosterCard
           steps={turn.planSteps}
           toolCalls={turn.toolCalls}
           isLive={!readOnly && turn.status === 'running'}
@@ -125,18 +113,42 @@ export function TurnProcessSurfaces({
           decisionRationale={turn.decisionStage?.decisionRationale}
           routingLevel={turn.decisionStage?.routingLevel}
           confidence={turn.decisionStage?.confidence}
+          parentTaskId={readOnly ? undefined : turn.taskId}
         />
+        </div>
       )}
       {policy.showCodingCli && <CodingCliCard turn={turn} />}
       {policy.showPlanSurface && (
-        <PlanSurface
-          turn={turn}
-          suppressDelegateOutputs={policy.suppressDelegateOutputsInPlan}
-        />
+        <div id="plancard">
+          <PlanSurface
+            turn={turn}
+            suppressDelegateOutputs={policy.suppressDelegateOutputsInPlan}
+          />
+        </div>
       )}
-      {policy.showProcessTimeline && <ProcessTimeline turn={turn} />}
+      {policy.showTimelineHistory && <TimelineHistory turn={turn} mode={mode} nowMs={nowMs} />}
+      {policy.showAuditView && <AuditViewMount taskId={turn.taskId} mode={mode} />}
       {policy.showFinalAnswer && <FinalAnswer turn={turn} />}
       {policy.showDiagnostics && <DiagnosticsDrawer turn={turn} />}
     </>
   );
+}
+
+/**
+ * Mount adapter — `AuditView` consumes the projection's audit log, but
+ * `TurnProcessSurfaces` is rendered with a `StreamingTurn`. Mount the
+ * hook here so historical and live both fetch the same shape from
+ * `/process-state`. The hook polls in live mode (audit:entry is record-
+ * only by manifest design — see plan PR-2 D1) and is static in
+ * historical mode.
+ */
+function AuditViewMount({ taskId, mode }: { taskId: string; mode: TurnProcessMode }) {
+  const live = mode === 'live';
+  const audit = useAuditProjection(taskId, {
+    enabled: true,
+    staleTimeMs: live ? 5_000 : 5 * 60_000,
+    refetchIntervalMs: live ? 7_000 : false,
+  });
+  if (!audit.hasAuditData) return null;
+  return <AuditView auditLog={audit.auditLog} completenessBySection={audit.completenessBySection} />;
 }

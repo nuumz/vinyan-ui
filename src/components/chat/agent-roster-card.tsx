@@ -25,8 +25,10 @@ import { cn } from '@/lib/utils';
 import type { MultiAgentSubtaskView, PlanStep, ToolCall } from '@/hooks/use-streaming-turn';
 import { classifyTool, toolBadgeLabel, toolPrimaryPreview } from '@/lib/summarize-tools';
 import type { ToolCategory } from '@/lib/summarize-tools';
+import { useRetryTask } from '@/hooks/use-tasks';
+import { GROUP_MODE_LABEL } from '@/lib/workflow-labels';
 import { Markdown } from './markdown';
-import { GROUP_MODE_LABEL } from './stage-manifest-surface';
+import { SessionCard, SessionCardAffordance } from './session-card';
 
 /**
  * Multi-agent activity card. Lifecycle-aware surface for `delegate-sub-agent`
@@ -56,7 +58,7 @@ import { GROUP_MODE_LABEL } from './stage-manifest-surface';
  *   - Compare side-by-side view stacks 2+ completed agents in columns,
  *     reading from `outputPreview` directly.
  */
-export interface AgentTimelineCardProps {
+export interface AgentRosterCardProps {
   /** Plan steps from the parent turn. Filtered internally to delegate-sub-agent rows. */
   steps: PlanStep[];
   /**
@@ -123,6 +125,13 @@ export interface AgentTimelineCardProps {
    * as `conf X%` in the timeline metadata strip.
    */
   confidence?: number;
+  /**
+   * Parent task id (Slice 4) — enables a "Retry parent task" affordance on
+   * failed delegate rows. The retry endpoint is parent-scoped (no per-step
+   * retry exists today); the button label/tooltip make this explicit so
+   * users don't expect the failed sub-agent alone to re-run.
+   */
+  parentTaskId?: string;
 }
 
 interface StatusMeta {
@@ -353,6 +362,12 @@ interface DelegateRowProps {
   /** Optional one-line reasoning from the synthesizer's verdict, surfaced
    *  inline under the winning row. */
   winnerReasoning?: string;
+  /**
+   * Parent task id — when set, failed rows expose a "Retry parent task"
+   * button. The retry endpoint is parent-scoped, so this is explicit
+   * about what re-runs (the whole task; sub-agents replay as part of it).
+   */
+  parentTaskId?: string;
 }
 
 /**
@@ -407,9 +422,11 @@ function DelegateRow({
   showManifestDetail = true,
   isWinner = false,
   winnerReasoning,
+  parentTaskId,
 }: DelegateRowProps) {
   const [open, setOpen] = useState(defaultOpen);
   const effectiveOpen = forceOpen ?? open;
+  const retryTask = useRetryTask();
   const meta = statusMeta(step);
   const Icon = meta.Icon;
 
@@ -586,8 +603,37 @@ function DelegateRow({
           {hasFinalOutput && <FinalAnswerDisclosure text={effectiveOutputPreview ?? ''} />}
           {step.status === 'failed' && !hasFinalOutput && (
             <div className="rounded border border-red/25 bg-red/5 p-2 text-red/90 space-y-1">
-              <div className="text-[10.5px] uppercase tracking-wide font-medium">
-                {describeErrorKind(subtask?.errorKind)}
+              <div className="flex items-start justify-between gap-2">
+                <div className="text-[10.5px] uppercase tracking-wide font-medium">
+                  {describeErrorKind(subtask?.errorKind)}
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <SessionCardAffordance
+                    label="Reassign persona"
+                    reason="Persona pinned at dispatch — pending backend RFC for runtime reassignment"
+                    rfcUrl="docs/design/multi-agent-hardening-roadmap.md"
+                  />
+                  {parentTaskId && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        retryTask.mutate({
+                          taskId: parentTaskId,
+                          reason: 'manual-retry-from-roster-row',
+                          maxDurationMs: 240_000,
+                        });
+                      }}
+                      disabled={retryTask.isPending}
+                      title="Retry the parent task — sub-agents re-run as part of the replan"
+                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium border border-red/40 bg-red/10 hover:bg-red/15 disabled:opacity-60"
+                    >
+                      {retryTask.isPending ? (
+                        <Loader2 size={11} className="animate-spin" />
+                      ) : null}
+                      Retry parent
+                    </button>
+                  )}
+                </div>
               </div>
               {subtask?.errorMessage ? (
                 <div className="text-[11px] font-mono break-words">{subtask.errorMessage}</div>
@@ -752,7 +798,10 @@ function CompareDrawer({
 
 function QueuedChip({ count, blocking }: { count: number; blocking: PlanStep | null }) {
   return (
-    <div className="rounded-md border border-border/40 bg-bg/15 px-3 py-1.5 flex items-center gap-2 text-[11px] text-text-dim">
+    <SessionCard
+      variant="inset"
+      className="px-3 py-1.5 flex items-center gap-2 text-[11px] text-text-dim"
+    >
       <Hourglass size={11} className="text-text-dim/80 shrink-0" />
       <span>
         <span className="font-medium text-text/85">{count}</span> sub-agent
@@ -766,11 +815,11 @@ function QueuedChip({ count, blocking }: { count: number; blocking: PlanStep | n
           </span>
         </span>
       )}
-    </div>
+    </SessionCard>
   );
 }
 
-function AgentTimelineCardImpl({
+function AgentRosterCardImpl({
   steps,
   toolCalls = [],
   isLive = false,
@@ -782,7 +831,8 @@ function AgentTimelineCardImpl({
   decisionRationale,
   routingLevel,
   confidence,
-}: AgentTimelineCardProps) {
+  parentTaskId,
+}: AgentRosterCardProps) {
   const [forceAllOpen, setForceAllOpen] = useState<boolean | undefined>(undefined);
   const delegateRows = useMemo(
     () => steps.filter((s) => s.strategy === 'delegate-sub-agent'),
@@ -1016,6 +1066,7 @@ function AgentTimelineCardImpl({
               forceOpen={forceAllOpen}
               isWinner={isWinner}
               winnerReasoning={isWinner ? winnerReasoning : undefined}
+              parentTaskId={parentTaskId}
             />
           );
         })}
@@ -1055,4 +1106,4 @@ function AgentTimelineCardImpl({
   );
 }
 
-export const AgentTimelineCard = memo(AgentTimelineCardImpl);
+export const AgentRosterCard = memo(AgentRosterCardImpl);

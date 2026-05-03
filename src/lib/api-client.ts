@@ -381,6 +381,158 @@ export interface TaskProcessHistory {
   descendantTaskIds: string[];
 }
 
+// ── A8 audit surface ────────────────────────────────────────────────
+
+export type AuditActorType =
+  | 'persona'
+  | 'worker'
+  | 'cli-delegate'
+  | 'peer'
+  | 'orchestrator'
+  | 'oracle'
+  | 'critic'
+  | 'user';
+
+export interface AuditActorRef {
+  type: AuditActorType;
+  id?: string;
+  vendor?: string;
+}
+
+export type AuditEvidenceRef =
+  | { type: 'file'; path: string; sha256: string; range?: [number, number] }
+  | { type: 'fact'; factId: string; sha256: string }
+  | { type: 'event'; eventId: string }
+  | { type: 'verdict'; verdictId: string }
+  | { type: 'tool_result'; auditEntryId: string };
+
+export interface AuditEntryWrapperFields {
+  id: string;
+  taskId: string;
+  parentEntryId?: string;
+  turn?: string;
+  ts: number;
+  policyVersion: string;
+  schemaVersion: 1;
+  actor: AuditActorRef;
+  evidenceRefs?: AuditEvidenceRef[];
+  redactionPolicyHash?: string;
+}
+
+export type AuditEntry = AuditEntryWrapperFields &
+  (
+    | { kind: 'thought'; content: string; trigger?: 'pre-tool' | 'post-tool' | 'plan' | 'reflect'; tokenCount?: number }
+    | {
+        kind: 'tool_call';
+        lifecycle: 'executed' | 'failed' | 'retried';
+        toolId: string;
+        toolVersion?: string;
+        argsHash: string;
+        argsRedacted?: unknown;
+        resultHash?: string;
+        resultRedacted?: unknown;
+        latencyMs?: number;
+        retryOf?: string;
+      }
+    | {
+        kind: 'decision';
+        decisionType:
+          | 'route'
+          | 'escalate'
+          | 'approve'
+          | 'reject'
+          | 'synthesize'
+          | 'plan_edit'
+          | 'gate_open'
+          | 'gate_close'
+          | 'tool_authorize'
+          | 'tool_deny';
+        verdict: string;
+        rationale: string;
+        ruleId?: string;
+        ruleVersion?: string;
+        modelId?: string;
+        confidence?: number;
+        tier?: 'deterministic' | 'heuristic' | 'probabilistic';
+      }
+    | {
+        kind: 'verdict';
+        source: 'oracle' | 'critic' | 'hms' | 'goal-grounding';
+        pass: boolean | 'unknown';
+        score?: number;
+        confidence?: number;
+        falsifiableBy?: string[];
+        oracleId?: string;
+      }
+    | {
+        kind: 'plan_step';
+        stepId: string;
+        status: 'queued' | 'running' | 'done' | 'failed' | 'skipped';
+        parentStepId?: string;
+        subAgentId?: string;
+      }
+    | {
+        kind: 'delegate';
+        phase: 'spawn' | 'return' | 'cancel';
+        subAgentId: string;
+        persona?: string;
+        capabilityToken?: string;
+        budgetMs?: number;
+        outputHash?: string;
+      }
+    | {
+        kind: 'gate';
+        gateName: 'approval' | 'human_input' | 'partial_decision' | 'workflow';
+        phase: 'opened' | 'answered' | 'timed_out' | 'auto_closed';
+        decision?: 'approve' | 'reject' | 'edit' | 'answer';
+        payloadRedacted?: unknown;
+      }
+    | {
+        kind: 'final';
+        contentHash: string;
+        contentRedactedPreview: string;
+        assembledFromStepIds: string[];
+        assembledFromDelegateIds: string[];
+      }
+  );
+
+export type AuditSection =
+  | 'thoughts'
+  | 'toolCalls'
+  | 'decisions'
+  | 'verdicts'
+  | 'planSteps'
+  | 'delegates'
+  | 'gates'
+  | 'finals';
+
+export interface TaskProcessAuditBySection {
+  thoughts: AuditEntry[];
+  toolCalls: AuditEntry[];
+  decisions: AuditEntry[];
+  verdicts: AuditEntry[];
+  planSteps: AuditEntry[];
+  delegates: AuditEntry[];
+  gates: AuditEntry[];
+  finals: AuditEntry[];
+}
+
+export interface TaskProcessProvenance {
+  policyVersions: string[];
+  modelIds: string[];
+  oracleIds: string[];
+  promptHashes: string[];
+}
+
+export type TaskProcessSectionCompletenessKind = 'complete' | 'partial' | 'unclassifiable';
+
+export interface TaskProcessSectionCompleteness {
+  section: AuditSection;
+  kind: TaskProcessSectionCompletenessKind;
+  count: number;
+  reason?: string;
+}
+
 export interface TaskProcessProjection {
   lifecycle: TaskProcessLifecycle;
   completeness: TaskProcessCompleteness;
@@ -389,6 +541,14 @@ export interface TaskProcessProjection {
   codingCliSessions: TaskProcessCodingCliSession[];
   diagnostics: TaskProcessDiagnostics;
   history: TaskProcessHistory;
+  /** A8 audit log — chronological list of audit entries (real + synthesized). */
+  auditLog?: AuditEntry[];
+  /** Per-section grouping mirroring `auditLog`. */
+  bySection?: TaskProcessAuditBySection;
+  /** Provenance roll-up across the audit log. */
+  provenance?: TaskProcessProvenance;
+  /** Per-section completeness — honest signals only. */
+  completenessBySection?: TaskProcessSectionCompleteness[];
 }
 
 export interface PendingApproval {
@@ -1914,6 +2074,19 @@ export const api = {
    */
   getTaskProcessState: (taskId: string) =>
     fetchJSON<TaskProcessProjection>(`/tasks/${encodeURIComponent(taskId)}/process-state`),
+
+  /**
+   * A8 evidence-stale check. Hits `/files/check-hash` so the audit view's
+   * evidence chip can verify a file's recorded sha256 still matches disk
+   * before opening it. The backend enforces the workspace boundary; this
+   * client just relays params.
+   */
+  checkFileHash: (path: string, sha256: string) => {
+    const params = new URLSearchParams({ path, sha256 });
+    return fetchJSON<{ match: boolean; actual: string; missing: boolean; path: string }>(
+      `/files/check-hash?${params.toString()}`,
+    );
+  },
 
   /**
    * Cross-task event log for a session, ordered by `(ts, id)`.

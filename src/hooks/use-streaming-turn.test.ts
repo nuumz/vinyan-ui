@@ -1853,6 +1853,115 @@ describe('reduceTurn — stage manifest', () => {
     expect(failed.multiAgentSubtasks[1]!.errorMessage).toContain('180s');
   });
 
+  test('subtask_updated monotonic guard: late running cannot revert a terminal subtask', () => {
+    // Concrete repro: parent task `1b74654b-fad9-4e98-8cfc-4662916b50e6`
+    // (2026-05-03) emitted task:complete + sweep at the synthesizer step,
+    // then a recursive sub-task's late watchdog fired
+    // `subtask_updated{status:'running'}` — the agent timeline card flipped
+    // back to a spinner even though the bubble header already read "Done"
+    // ("1 working 6 done" alongside "✓ Done"). Without this monotonic
+    // guard the user sees two contradictory truths in one card.
+    const seeded = reduceTurn(emptyTurn(), ev('task:start', { input: { id: 'parent-1' } }));
+    const planned = reduceTurn(
+      seeded,
+      ev('workflow:subtasks_planned', {
+        taskId: 'parent-1',
+        groupMode: 'competition',
+        subtasks: [
+          {
+            subtaskId: 'parent-1-delegate-s1',
+            parentTaskId: 'parent-1',
+            stepId: 's1',
+            fallbackLabel: 'Agent 1',
+            title: 'Answer',
+            objective: 'Answer question',
+            prompt: 'Answer question',
+            inputRefs: [],
+            status: 'planned',
+          },
+        ],
+      }),
+    );
+    const done = reduceTurn(
+      planned,
+      ev('workflow:subtask_updated', {
+        taskId: 'parent-1',
+        subtaskId: 'parent-1-delegate-s1',
+        stepId: 's1',
+        status: 'done',
+        outputPreview: 'final answer',
+      }),
+    );
+    expect(done.multiAgentSubtasks[0]!.status).toBe('done');
+    // Late "running" arrives after the subtask was already terminal.
+    const reverted = reduceTurn(
+      done,
+      ev('workflow:subtask_updated', {
+        taskId: 'parent-1',
+        subtaskId: 'parent-1-delegate-s1',
+        stepId: 's1',
+        status: 'running',
+        agentId: 'researcher',
+      }),
+    );
+    // Status holds at terminal — no spinner regression.
+    expect(reverted.multiAgentSubtasks[0]!.status).toBe('done');
+    // Other fields (agentId in this case) DO still patch through. Only
+    // the lifecycle phase is held; metadata catch-up snapshots remain
+    // applied so the card can still reveal the resolved persona id.
+    expect(reverted.multiAgentSubtasks[0]!.agentId).toBe('researcher');
+    expect(reverted.multiAgentSubtasks[0]!.outputPreview).toBe('final answer');
+  });
+
+  test('subtask_updated monotonic guard: terminal-to-terminal transitions are still applied', () => {
+    // Regression guard: the monotonic check must only block terminal →
+    // non-terminal. A task that lands `done` then later corrected to
+    // `failed` (e.g. a late oracle verdict overrides the optimistic
+    // success) MUST flip to failed; otherwise the UI would lie about a
+    // successful outcome that was post-hoc invalidated.
+    const seeded = reduceTurn(emptyTurn(), ev('task:start', { input: { id: 'parent-1' } }));
+    const planned = reduceTurn(
+      seeded,
+      ev('workflow:subtasks_planned', {
+        taskId: 'parent-1',
+        subtasks: [
+          {
+            subtaskId: 'parent-1-delegate-s1',
+            parentTaskId: 'parent-1',
+            stepId: 's1',
+            fallbackLabel: 'Agent 1',
+            title: 'Answer',
+            objective: 'q',
+            prompt: 'q',
+            inputRefs: [],
+            status: 'planned',
+          },
+        ],
+      }),
+    );
+    const done = reduceTurn(
+      planned,
+      ev('workflow:subtask_updated', {
+        taskId: 'parent-1',
+        subtaskId: 'parent-1-delegate-s1',
+        stepId: 's1',
+        status: 'done',
+      }),
+    );
+    const corrected = reduceTurn(
+      done,
+      ev('workflow:subtask_updated', {
+        taskId: 'parent-1',
+        subtaskId: 'parent-1-delegate-s1',
+        stepId: 's1',
+        status: 'failed',
+        errorKind: 'contract_violation',
+      }),
+    );
+    expect(corrected.multiAgentSubtasks[0]!.status).toBe('failed');
+    expect(corrected.multiAgentSubtasks[0]!.errorKind).toBe('contract_violation');
+  });
+
   test('stage events from a delegated sub-task are ignored on the parent turn', () => {
     const parent = reduceTurn(emptyTurn(), ev('task:start', { input: { id: 'parent-1' } }));
     const t = reduceTurn(

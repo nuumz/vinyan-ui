@@ -147,7 +147,6 @@ export function HistoricalProcessCard({ taskId }: HistoricalProcessCardProps) {
           mode="historical"
           sessionId={projectionSessionId ?? displayTurn.taskId}
           nowMs={nowMs}
-          defaultExpandStage
           actionableGates={actionableGates}
         />
       </div>

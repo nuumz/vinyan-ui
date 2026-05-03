@@ -16,6 +16,7 @@ import type {
 } from '@/hooks/use-streaming-turn';
 import { cn } from '@/lib/utils';
 import { Markdown } from './markdown';
+import { SessionCard } from './session-card';
 import { ToolCallCard } from './tool-call-card';
 
 interface PlanSurfaceProps {
@@ -290,7 +291,7 @@ function PlanSurfaceImpl({ turn, suppressDelegateOutputs = false }: PlanSurfaceP
   if (!hasPlan) {
     if (turn.toolCalls.length === 0) return null;
     return (
-      <div className="rounded-md border border-border/60 bg-bg/30 p-2.5 space-y-1.5">
+      <SessionCard variant="tertiary" className="p-2.5 space-y-1.5">
         <div className="text-[11px] uppercase tracking-wide text-text-dim font-medium">
           Tool activity
         </div>
@@ -299,7 +300,7 @@ function PlanSurfaceImpl({ turn, suppressDelegateOutputs = false }: PlanSurfaceP
             <ToolCallCard key={t.id} tool={t} />
           ))}
         </div>
-      </div>
+      </SessionCard>
     );
   }
 

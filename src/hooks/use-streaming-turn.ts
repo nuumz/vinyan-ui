@@ -510,6 +510,22 @@ const TERMINAL_STEP_STATUSES = new Set<PlanStep['status']>([
   'skipped',
 ]);
 
+/**
+ * Terminal subtask statuses for `MultiAgentSubtask`. Mirrors the per-step
+ * monotonic guard above — once a subtask reaches one of these phases, late
+ * `workflow:subtask_updated` events whose payload still says `running`
+ * (e.g. a sub-task whose own watchdog timer fired AFTER the parent already
+ * completed) cannot revert the card back to a spinner. Without this guard
+ * the chat bubble shows "Done" in the header but a `working` agent card
+ * below — incoherent state.
+ */
+const TERMINAL_SUBTASK_STATUSES = new Set<MultiAgentSubtaskStatus>([
+  'done',
+  'failed',
+  'timeout',
+  'skipped',
+]);
+
 interface StreamingTurnState {
   /** Keyed by sessionId. Only one active turn per session at a time. */
   bySession: Record<string, StreamingTurn | undefined>;
@@ -1609,26 +1625,42 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
       const subtaskId = typeof p.subtaskId === 'string' ? (p.subtaskId as string) : undefined;
       const status = p.status as MultiAgentSubtaskStatus | undefined;
       if (!subtaskId || !status) return turn;
-      const patch: Partial<MultiAgentSubtaskView> = {
-        status,
-        ...(typeof p.agentId === 'string' ? { agentId: p.agentId as string } : {}),
-        ...(typeof p.startedAt === 'number' ? { startedAt: p.startedAt as number } : {}),
-        ...(typeof p.completedAt === 'number' ? { completedAt: p.completedAt as number } : {}),
-        ...(typeof p.outputPreview === 'string' ? { outputPreview: p.outputPreview as string } : {}),
-        ...(typeof p.errorKind === 'string'
-          ? { errorKind: p.errorKind as MultiAgentSubtaskErrorKind }
-          : {}),
-        ...(typeof p.errorMessage === 'string' ? { errorMessage: p.errorMessage as string } : {}),
-        ...(typeof p.partialOutputAvailable === 'boolean'
-          ? { partialOutputAvailable: p.partialOutputAvailable as boolean }
-          : {}),
-        ...(typeof p.fallbackAttempted === 'boolean'
-          ? { fallbackAttempted: p.fallbackAttempted as boolean }
-          : {}),
-      };
-      const multiAgentSubtasks = turn.multiAgentSubtasks.map((s) =>
-        s.subtaskId === subtaskId ? { ...s, ...patch } : s,
-      );
+      const multiAgentSubtasks = turn.multiAgentSubtasks.map((s) => {
+        if (s.subtaskId !== subtaskId) return s;
+        // Status monotonicity: once a subtask has settled into a terminal
+        // phase (`done | failed | timeout | skipped`), a late
+        // `subtask_updated` whose payload still says `running` cannot
+        // unwind it. Mirrors the per-step guard in `agent:plan_update`.
+        // Concrete repro: parent task already emitted `task:complete` (the
+        // turn header reads "Done"), then a sub-task whose own watchdog
+        // belatedly fires arrives as `subtask_updated{status:'running'}`
+        // — without this guard the agent card flips back to a spinner
+        // even though the bubble is terminal. Other fields (agentId,
+        // outputPreview, timings) still patch through; only the lifecycle
+        // phase is held.
+        const isTerminalPrev = TERMINAL_SUBTASK_STATUSES.has(s.status);
+        const isTerminalIncoming = TERMINAL_SUBTASK_STATUSES.has(status);
+        const nextStatus: MultiAgentSubtaskStatus =
+          isTerminalPrev && !isTerminalIncoming ? s.status : status;
+        const patch: Partial<MultiAgentSubtaskView> = {
+          status: nextStatus,
+          ...(typeof p.agentId === 'string' ? { agentId: p.agentId as string } : {}),
+          ...(typeof p.startedAt === 'number' ? { startedAt: p.startedAt as number } : {}),
+          ...(typeof p.completedAt === 'number' ? { completedAt: p.completedAt as number } : {}),
+          ...(typeof p.outputPreview === 'string' ? { outputPreview: p.outputPreview as string } : {}),
+          ...(typeof p.errorKind === 'string'
+            ? { errorKind: p.errorKind as MultiAgentSubtaskErrorKind }
+            : {}),
+          ...(typeof p.errorMessage === 'string' ? { errorMessage: p.errorMessage as string } : {}),
+          ...(typeof p.partialOutputAvailable === 'boolean'
+            ? { partialOutputAvailable: p.partialOutputAvailable as boolean }
+            : {}),
+          ...(typeof p.fallbackAttempted === 'boolean'
+            ? { fallbackAttempted: p.fallbackAttempted as boolean }
+            : {}),
+        };
+        return { ...s, ...patch };
+      });
       return { ...turn, multiAgentSubtasks };
     }
     case 'workflow:winner_determined': {

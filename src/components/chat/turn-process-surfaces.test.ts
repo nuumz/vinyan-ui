@@ -124,13 +124,11 @@ describe('historical replay parity — multi-agent run', () => {
     const turn = replayProcessLog(events, { taskId: 't-multi' });
     const policy = buildTurnSurfaceRenderPolicy(turn, 'historical');
 
-    // Surface visibility — StageManifest is suppressed for delegate flows
-    // (decision label, group chip, done/total, rationale, routing/conf
-    // fold into AgentTimelineCard's header instead). FinalAnswer is also
-    // suppressed in historical mode because MessageBubble already renders
-    // `message.content` outside of TurnProcessSurfaces — leaving it on
-    // would duplicate the same markdown twice in one bubble.
-    expect(policy.showStageManifest).toBe(false);
+    // Surface visibility — for delegate flows decision metadata folds into
+    // AgentRosterCard's header. FinalAnswer is suppressed in historical
+    // mode because MessageBubble already renders `message.content` outside
+    // of TurnProcessSurfaces — leaving it on would duplicate the same
+    // markdown twice in one bubble.
     expect(policy.agentTimelineOwnsDecisionMeta).toBe(true);
     expect(policy.showAgentTimeline).toBe(true);
     expect(policy.showPlanSurface).toBe(true);

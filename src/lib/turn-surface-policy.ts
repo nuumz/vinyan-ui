@@ -2,24 +2,16 @@
  * Turn surface render policy — single source-of-truth for "what surfaces
  * does this turn render, and which one of them owns each piece of content".
  *
- * Why this exists: live and historical bubbles share `<TurnProcessSurfaces>`
- * but each surface had its own ad-hoc null-check + de-dup logic ("only show
- * if X", "drop chip if Y"). That worked while the bubble had four panels;
- * adding StageManifest + CodingCli pushed it past readable, and the user
- * flagged visible duplication in multi-agent replays (per-agent answer in
- * AgentTimelineCard AND in PlanSurface AND in FinalAnswer).
+ * Each information type has exactly one canonical owner:
  *
- * The policy assigns one canonical owner per information type and lets the
- * other surfaces degrade to references / no-ops:
- *
- *   | Information type            | Owner                     | Others           |
- *   |-----------------------------|---------------------------|------------------|
- *   | post-prompt decision        | StageManifestSurface (non-delegate) / AgentTimelineCard (delegate) | StageManifest is suppressed when delegate rows exist; decision meta (group mode, rationale, routing, confidence) folds into the timeline header instead |
- *   | multi-agent execution       | AgentTimelineCard         | PlanSurface chip suppressed; delegate rows non-expandable |
- *   | linear plan checklist       | PlanSurface               | StageManifest does not list steps |
- *   | final synthesized answer    | FinalAnswer               | (none)           |
- *   | orchestration audit log     | ProcessTimeline           | collapsed by default when delegate timeline above |
- *   | low-level diagnostics       | DiagnosticsDrawer         | collapsed always |
+ *   | Information type            | Owner                                   |
+ *   |-----------------------------|-----------------------------------------|
+ *   | post-prompt decision        | TaskCard (non-delegate) / AgentRosterCard header (delegate) |
+ *   | multi-agent execution       | AgentRosterCard                         |
+ *   | linear plan checklist       | PlanSurface                             |
+ *   | final synthesized answer    | FinalAnswer (live) / MessageBubble (historical) |
+ *   | chronological audit feed    | TimelineHistory                         |
+ *   | low-level diagnostics       | DiagnosticsDrawer                       |
  *
  * Pure function. No React, no hooks. The policy depends only on the reduced
  * `StreamingTurn` and the rendering mode — same input → same output.
@@ -33,20 +25,34 @@ export type TurnSurfaceMode = 'live' | 'historical';
  * the policy without hard-coding individual `defaultExpanded` props.
  */
 export type TurnSurfaceSection =
-  | 'stageManifest'
   | 'agentTimeline'
   | 'planSurface'
-  | 'processTimeline'
+  | 'timelineHistory'
   | 'diagnostics';
 
 export interface TurnSurfaceRenderPolicy {
-  showStageManifest: boolean;
   showAgentTimeline: boolean;
   showPlanSurface: boolean;
   showCodingCli: boolean;
   showFinalAnswer: boolean;
-  showProcessTimeline: boolean;
+  /**
+   * Unified chronological timeline (TimelineHistory). Replaces the legacy
+   * `showProcessTimeline` from Slice 2 onwards; Phase B (Slice 3) folds in
+   * the StageManifestSurface decision row, plan-step transitions, tool
+   * lifecycle, sub-agent spawn/return, gate events, and oracle/critic
+   * verdicts.
+   */
+  showTimelineHistory: boolean;
   showDiagnostics: boolean;
+  /**
+   * A8 audit surface — single-screen four-tab review (Reasoning / Tool
+   * calls / Decisions / Trace). Drives the rendering of `<AuditView>`
+   * inside `TurnProcessSurfaces`. The view itself is a no-op when its
+   * audit log is empty, so the policy can default to true once the
+   * projection is wired and let the component decide whether to render
+   * anything visible.
+   */
+  showAuditView: boolean;
   /**
    * True when AgentTimelineCard owns the per-delegate detail (expanded
    * drawer with tools + manifest + final answer disclosure). PlanSurface
@@ -57,22 +63,13 @@ export interface TurnSurfaceRenderPolicy {
    */
   suppressDelegateOutputsInPlan: boolean;
   /**
-   * True when AgentTimelineCard also owns the post-prompt decision metadata
-   * (group-mode chip, decision rationale, routing level, confidence). Set
-   * whenever AgentTimelineCard renders — the StageManifestSurface card is
-   * suppressed in delegate flows because its header (decision label, group
-   * chip, done/total) duplicates AgentTimelineCard's own header, and the
-   * remaining metadata folds into AgentTimelineCard inline. Non-delegate
-   * flows (single-agent, direct-tool, todoList-alone, full-pipeline) keep
-   * StageManifestSurface as the canonical owner.
+   * True when AgentRosterCard also owns the post-prompt decision metadata
+   * (group-mode chip, decision rationale, routing level, confidence) for
+   * the per-turn surface. Non-delegate flows surface the same metadata via
+   * `TaskCard`'s current-turn strip.
    */
   agentTimelineOwnsDecisionMeta: boolean;
-  /**
-   * Sections to render expanded by default. Live mode keeps everything
-   * collapsed (the live header carries the action; surfaces unfurl on
-   * demand). Historical mode opens the StageManifest so a past task's
-   * decision context is visible without an extra click.
-   */
+  /** Sections rendered expanded by default. */
   defaultOpenSections: ReadonlySet<TurnSurfaceSection>;
 }
 
@@ -117,9 +114,9 @@ export function buildTurnSurfaceRenderPolicy(
   const suppressDelegateOutputsInPlan =
     hasDelegateRows && turn.multiAgentSubtasks.length >= 2;
 
-  const defaultOpenSections =
-    mode === 'historical'
-      ? new Set<TurnSurfaceSection>(hasDecisionContext ? ['stageManifest'] : [])
+  const defaultOpenSections: ReadonlySet<TurnSurfaceSection> =
+    mode === 'historical' && hasDecisionContext
+      ? new Set<TurnSurfaceSection>(['timelineHistory'])
       : EMPTY_SET;
 
   // FinalAnswer is the live-mode home for the streaming markdown answer.
@@ -131,14 +128,20 @@ export function buildTurnSurfaceRenderPolicy(
   // (and carries the streaming caret).
   const showFinalAnswer = hasFinalAnswer && mode === 'live';
 
+  // AuditView is data-driven — render the chrome whenever the surrounding
+  // turn has any signal worth auditing (a tool call, a decision context,
+  // or process-log activity) and let `<AuditView>` hide itself when its
+  // own audit log is empty. Renders for both live and historical modes.
+  const showAuditView = hasPlan || hasDecisionContext || hasProcessLog || hasDelegateRows;
+
   return {
-    showStageManifest: hasDecisionContext && !hasDelegateRows,
     showAgentTimeline: hasDelegateRows,
     showPlanSurface: hasPlan,
     showCodingCli: hasCodingCli,
     showFinalAnswer,
-    showProcessTimeline: hasProcessLog,
+    showTimelineHistory: hasProcessLog || hasDecisionContext,
     showDiagnostics: hasDiagnostics,
+    showAuditView,
     suppressDelegateOutputsInPlan,
     agentTimelineOwnsDecisionMeta: hasDelegateRows,
     defaultOpenSections,

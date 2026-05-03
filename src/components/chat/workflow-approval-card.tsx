@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Check, ShieldAlert, ShieldQuestion, X } from 'lucide-react';
 import { useResolveWorkflowApproval } from '@/hooks/use-approvals';
+import { SessionCardAffordance } from './session-card';
 import type { PendingApproval } from '@/hooks/use-streaming-turn';
 import { cn } from '@/lib/utils';
 
@@ -58,6 +59,8 @@ export function WorkflowApprovalCard({
 }: WorkflowApprovalCardProps) {
   const resolve = useResolveWorkflowApproval();
   const [now, setNow] = useState(() => Date.now());
+  const [rejectMode, setRejectMode] = useState(false);
+  const [editsDraft, setEditsDraft] = useState(SUGGESTED_EDITS_TEMPLATE);
 
   const approvalMode: 'agent-discretion' | 'human-required' =
     pending.approvalMode ?? 'agent-discretion';
@@ -93,6 +96,25 @@ export function WorkflowApprovalCard({
       decision: 'rejected',
       reason: 'User rejected from chat',
     });
+  };
+  const onRejectWithEdits = () => {
+    setRejectMode(true);
+  };
+  const submitEdits = () => {
+    if (busy) return;
+    const trimmed = editsDraft.trim();
+    if (!trimmed) {
+      setRejectMode(false);
+      return;
+    }
+    resolve.mutate({
+      sessionId,
+      taskId: pending.taskId,
+      decision: 'rejected',
+      reason: `# Suggested edits\n${trimmed}`,
+    });
+    setRejectMode(false);
+    setEditsDraft(SUGGESTED_EDITS_TEMPLATE);
   };
 
   // Mode-specific palette + copy. Human-required uses a sterner red accent
@@ -191,43 +213,101 @@ export function WorkflowApprovalCard({
       )}
 
       {!readOnly ? (
-        <div className="flex items-center gap-2 flex-wrap">
-          <button
-            type="button"
-            onClick={onApprove}
-            disabled={buttonsDisabled}
-            className={cn(
-              'inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded transition-colors',
-              'bg-green/15 hover:bg-green/25 border border-green/40 text-green',
-              buttonsDisabled && 'opacity-50 cursor-not-allowed hover:bg-green/15',
+        rejectMode ? (
+          <div className="space-y-2">
+            <div className="text-[11px] text-text-dim">
+              Suggest edits — these reach the planner as the rejection reason.
+              Direct plan mutation is not yet supported by the backend.
+            </div>
+            <textarea
+              value={editsDraft}
+              onChange={(e) => setEditsDraft(e.target.value)}
+              rows={4}
+              className="w-full text-xs bg-bg/40 border border-border/60 rounded p-2 font-mono focus:outline-none focus:border-accent/50"
+              placeholder="- swap step 2 and 3&#10;- drop the lint pass"
+            />
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={submitEdits}
+                disabled={buttonsDisabled || editsDraft.trim().length === 0}
+                className={cn(
+                  'inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded transition-colors',
+                  'bg-red/10 hover:bg-red/20 border border-red/40 text-red',
+                  (buttonsDisabled || editsDraft.trim().length === 0) &&
+                    'opacity-50 cursor-not-allowed hover:bg-red/10',
+                )}
+              >
+                <X size={11} /> Reject with edits
+              </button>
+              <button
+                type="button"
+                onClick={() => setRejectMode(false)}
+                className="text-[11px] text-text-dim hover:text-text"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={onApprove}
+              disabled={buttonsDisabled}
+              className={cn(
+                'inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded transition-colors',
+                'bg-green/15 hover:bg-green/25 border border-green/40 text-green',
+                buttonsDisabled && 'opacity-50 cursor-not-allowed hover:bg-green/15',
+              )}
+            >
+              <Check size={11} /> Approve & run
+            </button>
+            <button
+              type="button"
+              onClick={onReject}
+              disabled={buttonsDisabled}
+              className={cn(
+                'inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded transition-colors',
+                'bg-red/10 hover:bg-red/20 border border-red/40 text-red',
+                buttonsDisabled && 'opacity-50 cursor-not-allowed hover:bg-red/10',
+              )}
+            >
+              <X size={11} /> Reject
+            </button>
+            <button
+              type="button"
+              onClick={onRejectWithEdits}
+              disabled={buttonsDisabled}
+              className={cn(
+                'inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded transition-colors',
+                'bg-bg/40 hover:bg-bg/60 border border-border/70 text-text',
+                buttonsDisabled && 'opacity-50 cursor-not-allowed hover:bg-bg/40',
+              )}
+              title="Send rejection with edit suggestions in the reason field"
+            >
+              Reject with edits
+            </button>
+            <SessionCardAffordance
+              label="Edit plan"
+              reason="No incremental plan mutation endpoint — use Reject with edits instead"
+              rfcUrl="docs/design/multi-agent-hardening-roadmap.md"
+            />
+            {!isHumanRequired && remaining <= 0 && (
+              <span className="text-[11px] text-yellow">
+                Window expired — Vinyan is deciding…
+              </span>
             )}
-          >
-            <Check size={11} /> Approve & run
-          </button>
-          <button
-            type="button"
-            onClick={onReject}
-            disabled={buttonsDisabled}
-            className={cn(
-              'inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded transition-colors',
-              'bg-red/10 hover:bg-red/20 border border-red/40 text-red',
-              buttonsDisabled && 'opacity-50 cursor-not-allowed hover:bg-red/10',
-            )}
-          >
-            <X size={11} /> Reject
-          </button>
-          {!isHumanRequired && remaining <= 0 && (
-            <span className="text-[11px] text-yellow">
-              Window expired — Vinyan is deciding…
-            </span>
-          )}
-        </div>
+          </div>
+        )
       ) : (
         <div className="text-[11px] text-text-dim italic">Read-only — no decision recorded.</div>
       )}
     </div>
   );
 }
+
+const SUGGESTED_EDITS_TEMPLATE = '- ';
 
 function formatRemaining(ms: number): string {
   if (ms <= 0) return '0s';

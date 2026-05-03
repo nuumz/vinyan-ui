@@ -2,20 +2,15 @@ import { useState } from 'react';
 import {
   ChevronDown,
   ChevronRight,
-  Clock,
-  Cpu,
-  HelpCircle,
-  Layers,
-  Hash,
   MessageCircle,
-  ShieldCheck,
-  User,
   Workflow,
   Wrench,
   Zap,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { ConversationEntry } from '@/lib/api-client';
+import { toAgentMessage } from '@/types/session-timeline';
+import { ActionCard, MetadataPillRow } from './action-card';
 import { Markdown } from './markdown';
 import { HistoricalProcessCard } from './historical-process-card';
 
@@ -54,14 +49,6 @@ function normalizeToolsUsed(
       ? { key: `${idx}:${t}`, label: t }
       : { key: t.id || `${idx}:${t.name}`, label: t.name },
   );
-}
-
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  const min = Math.floor(ms / 60_000);
-  const sec = Math.floor((ms % 60_000) / 1000);
-  return `${min}m${sec}s`;
 }
 
 /**
@@ -117,6 +104,7 @@ export function MessageBubble({ message }: { message: ConversationEntry }) {
   const clarification = !isUser ? parseInputRequiredBlock(message.content) : null;
   const tools = normalizeToolsUsed(message.toolsUsed);
   const trace = !isUser ? message.traceSummary : undefined;
+  const agentMessage = !isUser ? toAgentMessage(message) : null;
   // Suppress the in-bubble "Process" toggle for agentic-workflow messages
   // because session-chat.tsx renders the persisted process card as its
   // own sibling bubble above this one. Toggling the same surface twice
@@ -140,16 +128,17 @@ export function MessageBubble({ message }: { message: ConversationEntry }) {
           <div className="space-y-2">
             {clarification.preamble && <Markdown content={clarification.preamble} />}
             {clarification.questions.length > 0 && (
-              <div className="bg-yellow/5 border border-yellow/20 rounded-md p-2.5">
-                <div className="flex items-center gap-1.5 text-xs text-yellow font-medium mb-1.5">
-                  <HelpCircle size={12} /> Clarification needed
-                </div>
-                <ul className="list-disc list-inside text-sm text-text-dim space-y-1">
-                  {clarification.questions.map((q) => (
-                    <li key={q}>{q}</li>
-                  ))}
-                </ul>
-              </div>
+              <ActionCard
+                kind="clarification"
+                bullets={clarification.questions}
+                metadata={{
+                  status: 'pending',
+                  role: trace?.workerId ?? 'orchestrator',
+                  tool: 'creative-clarification',
+                  tier: trace?.routingLevel,
+                  latencyMs: trace?.durationMs ?? 0,
+                }}
+              />
             )}
           </div>
         ) : (
@@ -157,48 +146,15 @@ export function MessageBubble({ message }: { message: ConversationEntry }) {
         )}
 
         {/*
-          Trace summary chip row — model / routing level / duration / tokens.
-          Shown only on assistant messages where the backend wired a
-          TraceStore. Outcome leads as a colored status pill; remaining
-          chips are quieter metadata with subtle leading icons.
+          Trace summary chip row — delegated to the shared MetadataPillRow
+          so MessageBubble, ActionCard, and any future surface stay in
+          lock-step. The approach chip is rendered alongside because it
+          carries a kind-specific icon (Workflow / MessageCircle / Wrench)
+          that doesn't fit the generic pill row's status/role/tool slots.
         */}
-        {trace && (
+        {trace && agentMessage?.metadata && (
           <div className="mt-2.5 flex flex-wrap items-center gap-1.5 text-[11px]">
-            <span
-              className={cn(
-                'inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full font-medium border',
-                trace.outcome === 'success'
-                  ? 'bg-green/10 text-green border-green/25'
-                  : trace.outcome === 'failure'
-                    ? 'bg-red/10 text-red border-red/25'
-                    : 'bg-yellow/10 text-yellow border-yellow/25',
-              )}
-            >
-              <span
-                className={cn(
-                  'h-1.5 w-1.5 rounded-full',
-                  trace.outcome === 'success'
-                    ? 'bg-green'
-                    : trace.outcome === 'failure'
-                      ? 'bg-red'
-                      : 'bg-yellow',
-                )}
-              />
-              {trace.outcome}
-            </span>
-            {trace.workerId && (
-              // Surface the agent / worker that answered. Without this chip
-              // the user cannot tell whether `developer`, `assistant`, or a
-              // synthesized specialist responded — they'd have to dig into
-              // the trace. Highest-priority chip after outcome.
-              <span
-                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-accent/10 text-accent border border-accent/25 font-medium"
-                title="Agent"
-              >
-                <User size={10} />
-                {trace.workerId}
-              </span>
-            )}
+            <MetadataPillRow metadata={agentMessage.metadata} />
             {trace.approach &&
               (() => {
                 const meta = approachChipMeta(trace.approach);
@@ -216,42 +172,6 @@ export function MessageBubble({ message }: { message: ConversationEntry }) {
                   </span>
                 );
               })()}
-            <span
-              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-bg/50 text-text-dim border border-border/70"
-              title="Model"
-            >
-              <Cpu size={10} className="text-accent/80" />
-              {trace.modelUsed}
-            </span>
-            <span
-              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-bg/50 text-text-dim border border-border/70"
-              title="Risk routing level"
-            >
-              <Layers size={10} />L{trace.routingLevel}
-            </span>
-            <span
-              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-bg/50 text-text-dim border border-border/70"
-              title="Duration"
-            >
-              <Clock size={10} />
-              {formatDuration(trace.durationMs)}
-            </span>
-            <span
-              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-bg/50 text-text-dim border border-border/70"
-              title="Tokens consumed"
-            >
-              <Hash size={10} />
-              {trace.tokensConsumed.toLocaleString()}
-            </span>
-            {trace.oracleVerdictCount > 0 && (
-              <span
-                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-bg/50 text-text-dim border border-border/70"
-                title="Oracle verdicts"
-              >
-                <ShieldCheck size={10} />
-                {trace.oracleVerdictCount}
-              </span>
-            )}
           </div>
         )}
 

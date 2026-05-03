@@ -17,12 +17,12 @@ describe('buildTurnSurfaceRenderPolicy', () => {
   test('conversational reply: only final answer + diagnostics-on-demand', () => {
     const turn = turnWith({ finalContent: 'hi' });
     const p = buildTurnSurfaceRenderPolicy(turn, 'live');
-    expect(p.showStageManifest).toBe(false);
     expect(p.showAgentTimeline).toBe(false);
     expect(p.showPlanSurface).toBe(false);
     expect(p.showCodingCli).toBe(false);
     expect(p.showFinalAnswer).toBe(true);
-    expect(p.showProcessTimeline).toBe(false);
+    expect(p.showTimelineHistory).toBe(false);
+    expect(p.showAuditView).toBe(false);
     expect(p.suppressDelegateOutputsInPlan).toBe(false);
     expect(p.agentTimelineOwnsDecisionMeta).toBe(false);
   });
@@ -36,7 +36,7 @@ describe('buildTurnSurfaceRenderPolicy', () => {
     expect(p.showFinalAnswer).toBe(false);
   });
 
-  test('single-agent workflow: stage + plan + final answer; no delegate de-dup', () => {
+  test('single-agent workflow: timeline + plan + final answer; no delegate de-dup', () => {
     const turn = turnWith({
       decisionStage: {
         taskId: 't-test',
@@ -51,7 +51,7 @@ describe('buildTurnSurfaceRenderPolicy', () => {
       finalContent: 'answer',
     });
     const p = buildTurnSurfaceRenderPolicy(turn, 'live');
-    expect(p.showStageManifest).toBe(true);
+    expect(p.showTimelineHistory).toBe(true);
     expect(p.showAgentTimeline).toBe(false);
     expect(p.showPlanSurface).toBe(true);
     expect(p.showFinalAnswer).toBe(true);
@@ -99,11 +99,9 @@ describe('buildTurnSurfaceRenderPolicy', () => {
       finalContent: 'synthesized',
     });
     const p = buildTurnSurfaceRenderPolicy(turn, 'live');
-    // StageManifest is suppressed when delegate rows exist — its content
-    // (decision label, group chip, done/total, rationale, routing, conf)
-    // folds into AgentTimelineCard's header instead. Test locks in the
-    // dedup contract.
-    expect(p.showStageManifest).toBe(false);
+    // Decision metadata moves to AgentRosterCard's header in delegate flows.
+    // TaskCard's current-turn strip stays empty for these flows; the
+    // ownership flag locks the contract.
     expect(p.showAgentTimeline).toBe(true);
     expect(p.agentTimelineOwnsDecisionMeta).toBe(true);
     expect(p.showPlanSurface).toBe(true);
@@ -132,15 +130,13 @@ describe('buildTurnSurfaceRenderPolicy', () => {
     });
     const p = buildTurnSurfaceRenderPolicy(turn, 'live');
     expect(p.showAgentTimeline).toBe(true);
-    // Single-delegate flow still flips the meta-ownership gate so the
-    // routing/conf/rationale strip lives inside AgentTimelineCard rather
-    // than in a separate StageManifest card above it.
-    expect(p.showStageManifest).toBe(false);
+    // Single-delegate flow flips the meta-ownership gate so the
+    // routing/conf/rationale strip lives inside AgentRosterCard.
     expect(p.agentTimelineOwnsDecisionMeta).toBe(true);
     expect(p.suppressDelegateOutputsInPlan).toBe(false);
   });
 
-  test('historical mode opens stage manifest by default when present', () => {
+  test('historical mode opens TimelineHistory by default when decision context exists', () => {
     const turn = turnWith({
       decisionStage: {
         taskId: 't-test',
@@ -151,15 +147,15 @@ describe('buildTurnSurfaceRenderPolicy', () => {
     });
     const live = buildTurnSurfaceRenderPolicy(turn, 'live');
     const hist = buildTurnSurfaceRenderPolicy(turn, 'historical');
-    expect(live.defaultOpenSections.has('stageManifest')).toBe(false);
-    expect(hist.defaultOpenSections.has('stageManifest')).toBe(true);
+    expect(live.defaultOpenSections.has('timelineHistory')).toBe(false);
+    expect(hist.defaultOpenSections.has('timelineHistory')).toBe(true);
   });
 
   test('historical mode without decision/todos keeps default-open empty', () => {
     const turn = turnWith({ finalContent: 'plain reply' });
     const hist = buildTurnSurfaceRenderPolicy(turn, 'historical');
-    expect(hist.showStageManifest).toBe(false);
-    expect(hist.defaultOpenSections.has('stageManifest')).toBe(false);
+    expect(hist.showTimelineHistory).toBe(false);
+    expect(hist.defaultOpenSections.has('timelineHistory')).toBe(false);
   });
 
   test('coding CLI sessions trigger CodingCliCard', () => {
@@ -181,9 +177,9 @@ describe('buildTurnSurfaceRenderPolicy', () => {
     expect(p.showCodingCli).toBe(true);
   });
 
-  test('process log gates ProcessTimeline visibility', () => {
+  test('process log gates TimelineHistory visibility', () => {
     const empty = buildTurnSurfaceRenderPolicy(turnWith({}), 'live');
-    expect(empty.showProcessTimeline).toBe(false);
+    expect(empty.showTimelineHistory).toBe(false);
 
     const withLog = buildTurnSurfaceRenderPolicy(
       turnWith({
@@ -193,10 +189,10 @@ describe('buildTurnSurfaceRenderPolicy', () => {
       }),
       'live',
     );
-    expect(withLog.showProcessTimeline).toBe(true);
+    expect(withLog.showTimelineHistory).toBe(true);
   });
 
-  test('todoList alone (no decisionStage) is enough to render StageManifest', () => {
+  test('todoList alone (no decisionStage) is enough to render TimelineHistory', () => {
     const turn = turnWith({
       todoList: [
         {
@@ -209,9 +205,38 @@ describe('buildTurnSurfaceRenderPolicy', () => {
       ],
     });
     const p = buildTurnSurfaceRenderPolicy(turn, 'live');
-    expect(p.showStageManifest).toBe(true);
-    // No delegate rows → AgentTimelineCard does not render → StageManifest
-    // remains the canonical owner of decision context.
+    expect(p.showTimelineHistory).toBe(true);
+    // No delegate rows → AgentRosterCard does not render → TaskCard's
+    // current-turn strip is the canonical owner of decision context.
     expect(p.agentTimelineOwnsDecisionMeta).toBe(false);
+  });
+});
+
+describe('buildTurnSurfaceRenderPolicy — A8 audit surface', () => {
+  test('showAuditView is true when the turn has any plan / decision / process-log signal', () => {
+    const turn = turnWith({
+      planSteps: [
+        { id: 's1', label: 'A', status: 'done', toolCallIds: [], strategy: 'llm-reasoning' },
+        { id: 's2', label: 'B', status: 'done', toolCallIds: [], strategy: 'llm-reasoning' },
+      ],
+    });
+    expect(buildTurnSurfaceRenderPolicy(turn, 'live').showAuditView).toBe(true);
+  });
+
+  test('showAuditView is false on a bare conversational reply (no audit signal yet)', () => {
+    const turn = turnWith({ finalContent: 'hi' });
+    expect(buildTurnSurfaceRenderPolicy(turn, 'live').showAuditView).toBe(false);
+  });
+
+  test('showAuditView mirrors live and historical modes for the same turn', () => {
+    const turn = turnWith({
+      planSteps: [
+        { id: 's1', label: 'A', status: 'done', toolCallIds: [], strategy: 'llm-reasoning' },
+        { id: 's2', label: 'B', status: 'done', toolCallIds: [], strategy: 'llm-reasoning' },
+      ],
+    });
+    const live = buildTurnSurfaceRenderPolicy(turn, 'live');
+    const hist = buildTurnSurfaceRenderPolicy(turn, 'historical');
+    expect(live.showAuditView).toBe(hist.showAuditView);
   });
 });

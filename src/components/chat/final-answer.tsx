@@ -1,6 +1,7 @@
 import type { StreamingTurn } from '@/hooks/use-streaming-turn';
 import { useStreamingActivity } from '@/hooks/use-streaming-activity';
 import { Markdown } from './markdown';
+import { SessionCard } from './session-card';
 
 interface FinalAnswerProps {
   turn: StreamingTurn;
@@ -33,10 +34,10 @@ export function FinalAnswer({ turn }: FinalAnswerProps) {
   const streaming = useStreamingActivity(turn.finalContent, turn.status);
   if (!turn.finalContent) return null;
   return (
-    <div className="rounded-md border border-border bg-surface-2/40 px-3.5 py-2.5">
+    <SessionCard variant="primary" className="bg-surface-2/40 px-3.5 py-2.5">
       <div className="text-text">
         <Markdown content={turn.finalContent} streaming={streaming} />
       </div>
-    </div>
+    </SessionCard>
   );
 }
