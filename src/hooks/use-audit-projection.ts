@@ -15,21 +15,14 @@
  *     `useTaskProcessState(taskId)` (the task projection already carries
  *     `auditLog` / `bySection` / `byEntity` / `provenance` /
  *     `completenessBySection`).
- *   - session scope → falls back to a degraded view backed by
- *     `useTaskProcessState(undefined)` plus the projection layer's
- *     `byEntity.sessionId` rollup. A session-scoped HTTP route does NOT
- *     exist as of Phase 2.7 — the `SessionProcessProjectionService`
- *     lives in vinyan-agent but no `GET /api/v1/sessions/:sid/process-state`
- *     ships yet. See backend gap noted below.
- *
- * KNOWN BACKEND GAPS (P3 brief: "if you discover a backend gap, write it
- * up — do not patch"):
- *   - GAP(audit-redesign/session-process-state-route): no HTTP endpoint
- *     exposes the SessionProcessProjectionService built in P2.7. Until
- *     it ships, session-scope audit views show only what the UI can
- *     reach via existing endpoints (the most-recent task's projection,
- *     filtered to sessionId-matching rows). Phase 4 / follow-up work
- *     should add the route and switch this hook to consume it directly.
+ *   - session scope → degraded for per-entry audit. The
+ *     `GET /api/v1/sessions/:sid/process-state` route now ships and
+ *     surfaces session lifecycle + per-task summary + lifecycle counts,
+ *     but it does NOT carry an aggregated `auditLog`. Per-entry audit
+ *     drill-through still requires hitting the task-scoped projection
+ *     for each child task. Until that fan-out is wired, this hook
+ *     reports `isDegraded: true` for session scope and the page steers
+ *     users to task-scoped URLs for full audit detail.
  *
  * Sub-task / sub-agent / workflow scopes filter the SAME projection by
  * `byEntity` rollup — the projection's `auditLog` already carries every

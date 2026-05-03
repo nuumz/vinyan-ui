@@ -71,11 +71,11 @@ function AuditViewPageInner({ scope }: { scope: AuditScope }) {
   }
   if (audit.isDegraded) {
     return (
-      <div className="rounded-md border border-yellow/40 bg-yellow/5 px-3 py-2 text-sm text-yellow">
-        <p className="font-medium">Session-scope audit is degraded</p>
-        <p className="mt-1 text-xs text-text-muted">
-          The session-scoped HTTP route has not landed (Phase 4 follow-up). Use a task-scoped audit URL
-          (<code>/audit/tasks/:tid</code>) for full audit drill-through within a session.
+      <div className="rounded-md border border-border bg-bg/30 px-3 py-2 text-sm text-text-muted">
+        <p className="font-medium text-text">Session-scope audit aggregates per-task data</p>
+        <p className="mt-1 text-xs">
+          Use a task-scoped audit URL (<code>/audit/tasks/:tid</code>) for full per-entry audit
+          drill-through within a session.
         </p>
       </div>
     );
