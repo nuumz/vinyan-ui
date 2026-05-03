@@ -107,6 +107,7 @@ export function TurnProcessSurfaces({
           isLive={!readOnly && turn.status === 'running'}
           nowMs={nowMs}
           subtasks={turn.multiAgentSubtasks}
+          collaborationRounds={turn.collaborationRounds}
           groupMode={turn.multiAgentGroupMode}
           winnerAgentId={turn.winnerAgentId}
           winnerReasoning={turn.winnerReasoning}

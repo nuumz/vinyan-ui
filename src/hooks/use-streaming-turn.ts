@@ -158,6 +158,23 @@ export type MultiAgentSubtaskErrorKind =
   | 'infrastructure_unavailable'
   | 'unknown';
 
+/**
+ * Per-(stepId, round) telemetry from the collaboration block. Mirrors
+ * the backend's `TaskProcessCollaborationRound` (api-client.ts) so the
+ * agent-roster-card disclosure renders the round-by-round timeline
+ * without breaking the "one card per agent" cardinality contract.
+ */
+export interface CollaborationRoundView {
+  stepId: string;
+  round: number;
+  agentId?: string;
+  status: 'completed' | 'failed' | string;
+  outputPreview?: string;
+  tokensConsumed?: number;
+  startedAt?: number;
+  completedAt?: number;
+}
+
 export interface MultiAgentSubtaskView {
   subtaskId: string;
   parentTaskId: string;
@@ -428,6 +445,13 @@ export interface StreamingTurn {
   decisionStage?: WorkflowDecisionStageView;
   todoList: WorkflowTodoItemView[];
   multiAgentSubtasks: MultiAgentSubtaskView[];
+  /**
+   * Per-(stepId, round) telemetry from the parent's collaboration block.
+   * Populated from `workflow:collaboration_round` events. Empty for
+   * single-round dispatch / non-debate turns. Sorted by stepId then
+   * round so each agent's timeline is contiguous.
+   */
+  collaborationRounds: CollaborationRoundView[];
   /** Group mode for the multi-agent set (competition/debate/comparison). */
   multiAgentGroupMode?: MultiAgentGroupMode;
   /**
@@ -591,6 +615,7 @@ export function emptyTurn(options: { taskId?: string; startedAt?: number; recove
     codingCliSessions: {},
     todoList: [],
     multiAgentSubtasks: [],
+    collaborationRounds: [],
   };
 }
 
@@ -1662,6 +1687,57 @@ export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn 
         return { ...s, ...patch };
       });
       return { ...turn, multiAgentSubtasks };
+    }
+    case 'workflow:collaboration_round': {
+      // Per-(stepId, round) telemetry. Idempotent on (stepId, round) so
+      // a re-emit (replay tail or backend retry) updates the same row
+      // instead of duplicating it.
+      const eventTaskId = typeof p.taskId === 'string' ? (p.taskId as string) : undefined;
+      if (eventTaskId && turn.taskId && eventTaskId !== turn.taskId) return turn;
+      const stepId = typeof p.stepId === 'string' ? (p.stepId as string) : undefined;
+      const round = typeof p.round === 'number' ? (p.round as number) : undefined;
+      if (!stepId || round === undefined) return turn;
+      const idx = turn.collaborationRounds.findIndex(
+        (r) => r.stepId === stepId && r.round === round,
+      );
+      const next: CollaborationRoundView = {
+        stepId,
+        round,
+        status:
+          typeof p.status === 'string'
+            ? (p.status as 'completed' | 'failed' | string)
+            : (turn.collaborationRounds[idx]?.status ?? 'unknown'),
+        ...(typeof p.agentId === 'string'
+          ? { agentId: p.agentId as string }
+          : turn.collaborationRounds[idx]?.agentId
+            ? { agentId: turn.collaborationRounds[idx]!.agentId }
+            : {}),
+        ...(typeof p.outputPreview === 'string'
+          ? { outputPreview: p.outputPreview as string }
+          : turn.collaborationRounds[idx]?.outputPreview
+            ? { outputPreview: turn.collaborationRounds[idx]!.outputPreview }
+            : {}),
+        ...(typeof p.tokensConsumed === 'number'
+          ? { tokensConsumed: p.tokensConsumed as number }
+          : turn.collaborationRounds[idx]?.tokensConsumed !== undefined
+            ? { tokensConsumed: turn.collaborationRounds[idx]!.tokensConsumed }
+            : {}),
+        ...(typeof p.startedAt === 'number'
+          ? { startedAt: p.startedAt as number }
+          : turn.collaborationRounds[idx]?.startedAt !== undefined
+            ? { startedAt: turn.collaborationRounds[idx]!.startedAt }
+            : {}),
+        ...(typeof p.completedAt === 'number'
+          ? { completedAt: p.completedAt as number }
+          : turn.collaborationRounds[idx]?.completedAt !== undefined
+            ? { completedAt: turn.collaborationRounds[idx]!.completedAt }
+            : {}),
+      };
+      const collaborationRounds =
+        idx >= 0
+          ? turn.collaborationRounds.map((r, i) => (i === idx ? next : r))
+          : [...turn.collaborationRounds, next];
+      return { ...turn, collaborationRounds };
     }
     case 'workflow:winner_determined': {
       // COMPETITION-mode synthesizer's structured verdict. Backend emits this

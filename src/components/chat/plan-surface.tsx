@@ -207,7 +207,13 @@ function StepRow({
           {prefix && (
             <span className="mr-1.5 font-medium text-text-dim">[{prefix}]</span>
           )}
-          {step.label}
+          {step.label
+            ? step.label
+            : (
+              <span className="italic text-text-dim" title={step.id}>
+                {step.agentId ?? step.id}
+              </span>
+            )}
         </span>
         {step.agentId && !suppressDelegateChip && !prefix && (
           // Legacy chip path — kept for plans where the subtask manifest

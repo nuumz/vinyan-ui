@@ -90,6 +90,13 @@ export interface AgentRosterCardProps {
    */
   subtasks?: MultiAgentSubtaskView[];
   /**
+   * Per-(stepId, round) timeline rows produced by the collaboration
+   * block. The card filters by stepId per row and renders a disclosure
+   * inside the expanded delegate. Empty / undefined ⇒ single-round
+   * dispatch — disclosure is hidden.
+   */
+  collaborationRounds?: CollaborationRoundView[];
+  /**
    * Multi-agent group mode (competition / debate / comparison / parallel /
    * pipeline) — drives competition-only affordances such as the trophy
    * winner badge and the auto-opened CompareDrawer. Absent ⇒ all
@@ -331,6 +338,22 @@ function FinalAnswerDisclosure({ text }: FinalAnswerDisclosureProps) {
   );
 }
 
+/**
+ * Per-(stepId, round) row from the backend's `plan.collaborationRounds[]`.
+ * Mirrors `TaskProcessCollaborationRound` from api-client.ts so this
+ * component stays self-contained even though the backend type carries
+ * additional fields (we only need the disclosure-relevant subset here).
+ */
+export interface CollaborationRoundView {
+  stepId: string;
+  round: number;
+  status: string;
+  outputPreview?: string;
+  tokensConsumed?: number;
+  startedAt?: number;
+  completedAt?: number;
+}
+
 interface DelegateRowProps {
   step: PlanStep;
   events: ToolCall[];
@@ -340,6 +363,13 @@ interface DelegateRowProps {
   nowMs: number;
   /** Manifest record for this step, when the stage manifest is wired. */
   subtask?: MultiAgentSubtaskView;
+  /**
+   * Per-round timeline rows for this stepId, when the parent ran a
+   * collaboration block (debate / parallel / comparison). Pre-filtered
+   * upstream so this row only sees its own rounds. Empty / undefined
+   * means single-round dispatch — disclosure is hidden.
+   */
+  rounds?: CollaborationRoundView[];
   /**
    * Force the row open / closed from outside. When set, the row's local
    * disclosure state is overridden — used by the "Expand all agents" /
@@ -418,6 +448,7 @@ function DelegateRow({
   defaultOpen,
   nowMs,
   subtask,
+  rounds,
   forceOpen,
   showManifestDetail = true,
   isWinner = false,
@@ -591,6 +622,7 @@ function DelegateRow({
             <div className="text-[10px] font-mono text-text-dim/70">sub-task: {step.subTaskId}</div>
           )}
           {hasManifestDetail && subtask && <SubtaskManifestPanel subtask={subtask} />}
+          {rounds && rounds.length > 1 && <CollaborationRoundsPanel rounds={rounds} />}
           {hasEvents ? (
             <ol className="space-y-0">
               {events.map((tool) => (
@@ -712,6 +744,59 @@ function SubtaskManifestPanel({ subtask }: { subtask: MultiAgentSubtaskView }) {
   );
 }
 
+/**
+ * Per-round timeline disclosure for a multi-agent debate row. Reads from
+ * the parent task's `plan.collaborationRounds[]` (filtered by stepId).
+ * Renders as a compact "Round 1 · 1.2s · 320 tokens" list with the
+ * round's outputPreview folded in on a per-round basis. Only rendered
+ * when the agent ran ≥2 rounds — single-round dispatch keeps the
+ * existing card UI without disclosure noise.
+ */
+function CollaborationRoundsPanel({ rounds }: { rounds: CollaborationRoundView[] }) {
+  return (
+    <div className="rounded border border-border/30 bg-bg/15 px-2.5 py-1.5 text-[11px] space-y-1">
+      <div className="text-[10px] uppercase tracking-wide text-text-dim/80 font-medium">
+        Rounds · {rounds.length}
+      </div>
+      <ol className="space-y-1">
+        {rounds.map((r) => {
+          const dur =
+            typeof r.startedAt === 'number' && typeof r.completedAt === 'number'
+              ? formatDuration(Math.max(0, r.completedAt - r.startedAt))
+              : undefined;
+          const tone =
+            r.status === 'failed' ? 'text-red' : r.status === 'completed' ? 'text-text' : 'text-text-dim';
+          return (
+            <li key={r.round} className={cn('space-y-0.5', tone)}>
+              <div className="flex items-baseline gap-2">
+                <span className="font-mono tabular-nums text-text-dim/90">
+                  R{r.round + 1}
+                </span>
+                <span className="font-medium uppercase tracking-wide text-[10px]">
+                  {r.status}
+                </span>
+                {dur && (
+                  <span className="text-text-dim text-[10px] tabular-nums">{dur}</span>
+                )}
+                {typeof r.tokensConsumed === 'number' && (
+                  <span className="text-text-dim text-[10px] tabular-nums">
+                    {r.tokensConsumed} tok
+                  </span>
+                )}
+              </div>
+              {r.outputPreview && (
+                <div className="pl-7 text-text/80 line-clamp-2 wrap-break-word">
+                  {r.outputPreview}
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+}
+
 function ManifestRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
     <div className="flex items-start gap-2">
@@ -825,6 +910,7 @@ function AgentRosterCardImpl({
   isLive = false,
   nowMs = Date.now(),
   subtasks = [],
+  collaborationRounds,
   groupMode,
   winnerAgentId,
   winnerReasoning,
@@ -847,6 +933,20 @@ function AgentRosterCardImpl({
     for (const s of subtasks) m.set(s.stepId, s);
     return m;
   }, [subtasks]);
+
+  // stepId → collaboration rounds for that step, sorted by round.
+  // Empty entries omitted so DelegateRow checks `rounds && rounds.length > 1`
+  // to decide whether to render the disclosure.
+  const roundsByStep = useMemo(() => {
+    const m = new Map<string, CollaborationRoundView[]>();
+    for (const r of collaborationRounds ?? []) {
+      const list = m.get(r.stepId);
+      if (list) list.push(r);
+      else m.set(r.stepId, [r]);
+    }
+    for (const list of m.values()) list.sort((a, b) => a.round - b.round);
+    return m;
+  }, [collaborationRounds]);
 
   // Group tool calls by their resolved planStepId so each delegate row
   // gets its own compact history. Reducer's `resolveStepId` pins tool
@@ -1063,6 +1163,7 @@ function AgentRosterCardImpl({
               }
               nowMs={nowMs}
               subtask={subtask}
+              rounds={roundsByStep.get(row.id)}
               forceOpen={forceAllOpen}
               isWinner={isWinner}
               winnerReasoning={isWinner ? winnerReasoning : undefined}

@@ -275,11 +275,28 @@ export interface TaskProcessSubtask {
   outputPreview?: string;
 }
 
+/**
+ * Per-(stepId, round) row from the collaboration block. Distinct from
+ * `multiAgentSubtasks` which keeps one row per agent — this surface
+ * gives the agent-roster-card a round-by-round timeline disclosure.
+ */
+export interface TaskProcessCollaborationRound {
+  stepId: string;
+  round: number;
+  agentId?: string;
+  status: string;
+  outputPreview?: string;
+  tokensConsumed?: number;
+  startedAt?: number;
+  completedAt?: number;
+}
+
 export interface TaskProcessPlan {
   decisionStage?: string;
   todoList: TaskProcessTodoItem[];
   steps: TaskProcessPlanStep[];
   multiAgentSubtasks: TaskProcessSubtask[];
+  collaborationRounds?: TaskProcessCollaborationRound[];
   groupMode?: string;
   winner?: { agentId?: string; reasoning?: string; runnerUpAgentId?: string };
 }
