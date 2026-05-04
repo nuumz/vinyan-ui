@@ -1306,6 +1306,17 @@ export interface SSEEvent {
   event: string;
   payload: Record<string, unknown>;
   ts: number;
+  /**
+   * Optional row scope for descendant-mode replay. Set by
+   * `replayProcessLog` from the backend's `scope` annotation (or, when
+   * absent, from a row-level taskId comparison). The reducer uses this
+   * to drop parent-lifecycle events that originated under a sub-task —
+   * a child's `task:complete` would otherwise overwrite `turn.taskId`,
+   * `turn.status`, and the parent's plan-step sweep, breaking every
+   * subsequent subTaskId-based tool routing. Live SSE events leave this
+   * undefined; the reducer treats undefined as `'parent'`.
+   */
+  scope?: 'parent' | 'descendant';
 }
 
 // ── External Coding CLI types ────────────────────────────────────────────
@@ -2138,6 +2149,14 @@ export const api = {
         eventType: string;
         payload: Record<string, unknown>;
         ts: number;
+        /**
+         * Descendants mode — `'parent'` when the row's taskId matches the
+         * root, `'descendant'` for sub-agent rows. Additive field — legacy
+         * mode omits it entirely (consumer falls back to comparing taskId
+         * against the root). Read by `replayProcessLog` so the reducer can
+         * skip parent-lifecycle events that originated under a sub-task.
+         */
+        scope?: 'parent' | 'descendant';
       }>;
       /** Legacy mode — per-task seq cursor. */
       lastSeq?: number;

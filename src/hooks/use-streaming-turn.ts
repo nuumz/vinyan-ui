@@ -922,9 +922,95 @@ export const useStreamingTurnStore = create<StreamingTurnState>((set) => ({
     }),
 }));
 
+/**
+ * Events that mutate parent-only state (lifecycle, status, plan, gates,
+ * routing, synthesis, or content) and lack a per-event `eventTaskId`
+ * isolation guard. When the historical replay receives one of these
+ * with `scope: 'descendant'` we drop it — a sub-agent's `task:complete`
+ * would otherwise overwrite `turn.taskId` (rebinding every subsequent
+ * subTaskId-based tool routing to the child) and corrupt the parent's
+ * plan-step sweep / final content. Events that already have eventTaskId
+ * isolation (`agent:plan_update`, `workflow:delegate_dispatched`,
+ * `workflow:delegate_completed`, `workflow:subtask_updated`) are left
+ * out — their existing guards already short-circuit on mismatch.
+ *
+ * Allow-listed pass-through events (NOT in this set):
+ *   - `agent:tool_started` / `agent:tool_executed` / `agent:tool_denied`
+ *     route to the matching delegate row via `subTaskIdIndex`.
+ *   - `agent:text_delta` / `agent:thinking` / `llm:stream_delta` route
+ *     scoped output into `stepOutputs[stepId]`.
+ *   - `agent:turn_complete` accumulates child token totals into
+ *     `turn.tokensConsumed` — that's the right behaviour (the user
+ *     sees total tokens for the parent + every delegate).
+ *   - `audit:entry` is folded by the projection layer, not the reducer.
+ *   - `phase:timing` is harmless to accumulate.
+ */
+const PARENT_ONLY_LIFECYCLE_EVENTS: ReadonlySet<string> = new Set([
+  // Task lifecycle — would rebind turn.taskId / turn.status / turn.finalContent
+  'task:start',
+  'task:complete',
+  'task:timeout',
+  'task:cancelled',
+  'task:escalate',
+  'task:retry_requested',
+  'task:stage_update',
+  // Worker — parent's engine identity / failure
+  'worker:dispatch',
+  'worker:selected',
+  'worker:complete',
+  'worker:error',
+  // Agent — parent's routing / synthesis / contract
+  'agent:routed',
+  'agent:synthesized',
+  'agent:synthesis-failed',
+  'agent:capability-research',
+  'agent:capability-research-failed',
+  'agent:contract_violation',
+  'agent:clarification_requested',
+  // Workflow — parent's plan / gates / decision
+  'workflow:plan_created',
+  'workflow:plan_ready',
+  'workflow:plan_approved',
+  'workflow:plan_rejected',
+  'workflow:winner_determined',
+  'workflow:subtasks_planned',
+  'workflow:human_input_needed',
+  'workflow:human_input_provided',
+  'workflow:partial_failure_decision_needed',
+  'workflow:partial_failure_decision_provided',
+  'workflow:decision_recorded',
+  'workflow:todo_created',
+  'workflow:todo_updated',
+  // Oracle / critic / shadow / skill — parent-scoped verdicts
+  'oracle:verdict',
+  'critic:verdict',
+  'shadow:complete',
+  'skill:match',
+  'skill:miss',
+  // LLM provider notices — parent's engine context
+  'llm:provider_quota_exhausted',
+  'llm:provider_cooldown_started',
+  'llm:provider_fallback_selected',
+  'llm:provider_unavailable',
+]);
+
 /** Pure reducer — exported for unit tests. */
 export function reduceTurn(turn: StreamingTurn, event: SSEEvent): StreamingTurn {
   const p = event.payload ?? {};
+  // Descendant-scope guard for parent-only lifecycle events. A child
+  // sub-agent's `task:complete` would otherwise overwrite turn state and
+  // break tool routing for every subsequent delegate (concrete repro:
+  // historical replay shows "Reasoning-only delegate — final answer
+  // captured…" on every sub-agent row even though tool calls actually
+  // ran). Live SSE never triggers this branch — the bus only delivers
+  // events for the active task, so `event.scope` is undefined and
+  // pass-through is the default. See PARENT_ONLY_LIFECYCLE_EVENTS for
+  // the curated set; events with their own per-event eventTaskId guards
+  // (e.g. `agent:plan_update`, `workflow:delegate_*`) are intentionally
+  // not here — they already short-circuit on mismatch.
+  if (event.scope === 'descendant' && PARENT_ONLY_LIFECYCLE_EVENTS.has(event.event)) {
+    return turn;
+  }
   // External Coding CLI events: delegate to a self-contained substate
   // reducer. Keeps the main switch readable as the coding-cli surface
   // grows. `codingCliSessions` is the only field touched.

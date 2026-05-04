@@ -28,6 +28,16 @@
  * the persisted truth (the row-level value is what the descendants query
  * already filtered/merged by) and keeps live + historical paths in
  * lock-step.
+ *
+ * Descendant scope tagging (2026-05-04): in descendants mode the backend
+ * stamps each row with `scope: 'parent' | 'descendant'`. We forward that
+ * onto the SSEEvent so the reducer can short-circuit parent-lifecycle
+ * events that originated under a sub-task — a child's `task:complete`
+ * would otherwise overwrite `turn.taskId` (rebinding every guard in the
+ * reducer to the child id) and corrupt the parent's plan-step sweep.
+ * When `scope` is missing (legacy mode, older agents) we fall back to a
+ * row-level taskId comparison against the resolved root taskId so the
+ * guard works regardless of payload shape.
  */
 import { emptyTurn, reduceTurn, type StreamingTurn } from '@/hooks/use-streaming-turn';
 import type { SSEEvent } from '@/lib/api-client';
@@ -40,6 +50,12 @@ export interface PersistedTaskEvent {
   eventType: string;
   payload: Record<string, unknown>;
   ts: number;
+  /**
+   * Backend-stamped row scope (descendants mode). Optional so legacy
+   * single-task responses still parse. The replay path falls back to a
+   * row-level taskId comparison when this is undefined.
+   */
+  scope?: 'parent' | 'descendant';
 }
 
 export function replayProcessLog(
@@ -50,8 +66,17 @@ export function replayProcessLog(
   // with what the live stream would have shown. Defensive default `Date.now()`
   // so an empty input still returns a valid turn.
   const startedAt = events.length > 0 ? events[0]!.ts : Date.now();
+  // Resolve the root taskId once. Prefer the caller-provided value (the
+  // parent task we're replaying), then any event with `scope: 'parent'`,
+  // then the first event's taskId. This is the comparison key for the
+  // scope-fallback path below.
+  const rootTaskId =
+    options.taskId ??
+    events.find((e) => e.scope === 'parent')?.taskId ??
+    events[0]?.taskId ??
+    '';
   let turn = emptyTurn({
-    taskId: options.taskId ?? events[0]?.taskId ?? '',
+    taskId: rootTaskId,
     startedAt,
     recovered: true,
   });
@@ -60,10 +85,23 @@ export function replayProcessLog(
       ev.payload && typeof (ev.payload as { taskId?: unknown }).taskId === 'string'
         ? ev.payload
         : { ...ev.payload, taskId: ev.taskId };
+    // Prefer the backend's annotation. Fall back to row-level taskId
+    // comparison for legacy (non-descendants) responses and any path
+    // that bypasses the API layer (e.g. tests that build events by hand
+    // without setting `scope`). When both are unavailable (no rootTaskId
+    // either), default to 'parent' — single-task replay is the
+    // pre-descendants behaviour.
+    const scope: 'parent' | 'descendant' =
+      ev.scope === 'parent' || ev.scope === 'descendant'
+        ? ev.scope
+        : !rootTaskId || ev.taskId === rootTaskId
+          ? 'parent'
+          : 'descendant';
     const sseEvent: SSEEvent = {
       event: ev.eventType,
       payload,
       ts: ev.ts,
+      scope,
     };
     turn = reduceTurn(turn, sseEvent);
   }

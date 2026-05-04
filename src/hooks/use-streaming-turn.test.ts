@@ -2030,3 +2030,153 @@ describe('reduceTurn — stage manifest', () => {
     expect(replayed.multiAgentSubtasks).toEqual(live.multiAgentSubtasks);
   });
 });
+
+describe('reduceTurn — descendant scope guard (historical replay)', () => {
+  // Helpers — descendants mode tags every event with `scope`. Live SSE
+  // sets it undefined; the reducer must treat undefined as 'parent'.
+  function evScope<K extends string>(
+    name: K,
+    payload: Record<string, unknown>,
+    scope: 'parent' | 'descendant',
+  ): SSEEvent {
+    now += 10;
+    return { event: name, payload, ts: now, scope };
+  }
+
+  test("child task:complete with scope='descendant' does NOT corrupt parent turn.taskId/status", () => {
+    // Concrete repro for the historical Process Replay bug. A parent
+    // delegated to two children; each child emits its own task:complete
+    // BEFORE the parent's. Without the descendant guard, the child's
+    // result.id rebinds turn.taskId to the child id and turn.status
+    // flips to 'done' early — every subsequent agent:tool_started from
+    // the second delegate then fails its eventTaskId vs turn.taskId
+    // check and lands without a planStepId, collapsing the AgentRosterCard
+    // to "Reasoning-only delegate".
+    const t = fold(emptyTurn({ taskId: 'parent' }), [
+      evScope('task:start', { input: { id: 'parent' } }, 'parent'),
+      evScope(
+        'agent:plan_update',
+        {
+          taskId: 'parent',
+          steps: [
+            { id: 's1', label: 'Researcher', status: 'pending', strategy: 'delegate-sub-agent' },
+            { id: 's2', label: 'Author', status: 'pending', strategy: 'delegate-sub-agent' },
+          ],
+        },
+        'parent',
+      ),
+      evScope(
+        'workflow:delegate_dispatched',
+        { taskId: 'parent', stepId: 's1', subTaskId: 'child-1', agentId: 'researcher' },
+        'parent',
+      ),
+      evScope(
+        'workflow:delegate_dispatched',
+        { taskId: 'parent', stepId: 's2', subTaskId: 'child-2', agentId: 'author' },
+        'parent',
+      ),
+      // Child-1 ran a tool, then completed. Tool routing must pin to s1.
+      evScope(
+        'agent:tool_started',
+        { taskId: 'child-1', toolCallId: 'tc-1', toolName: 'Read' },
+        'descendant',
+      ),
+      evScope(
+        'agent:tool_executed',
+        { taskId: 'child-1', toolCallId: 'tc-1', toolName: 'Read', durationMs: 5 },
+        'descendant',
+      ),
+      evScope(
+        'task:complete',
+        { result: { id: 'child-1', status: 'completed', content: 'researcher answer' } },
+        'descendant',
+      ),
+      // Child-2 ran a tool AFTER the descendant task:complete. Without
+      // the guard, turn.taskId would now be 'child-1' and the tool's
+      // eventTaskId='child-2' wouldn't equal turn.taskId, falling through
+      // to currentRunningStepId — this is the bug.
+      evScope(
+        'agent:tool_started',
+        { taskId: 'child-2', toolCallId: 'tc-2', toolName: 'Grep' },
+        'descendant',
+      ),
+      evScope(
+        'agent:tool_executed',
+        { taskId: 'child-2', toolCallId: 'tc-2', toolName: 'Grep', durationMs: 7 },
+        'descendant',
+      ),
+      // Parent's terminal lands last.
+      evScope(
+        'task:complete',
+        { result: { id: 'parent', status: 'completed', content: 'final synthesis' } },
+        'parent',
+      ),
+    ]);
+    // Parent state: not corrupted by child.
+    expect(t.taskId).toBe('parent');
+    expect(t.status).toBe('done');
+    expect(t.finalContent).toBe('final synthesis');
+    // Both children's tool calls land on the right delegate row.
+    const s1Tools = t.toolCalls.filter((c) => c.planStepId === 's1');
+    const s2Tools = t.toolCalls.filter((c) => c.planStepId === 's2');
+    expect(s1Tools.map((c) => c.name)).toEqual(['Read']);
+    expect(s2Tools.map((c) => c.name)).toEqual(['Grep']);
+  });
+
+  test("child agent:tool_started/executed (scope='descendant') route to delegate row", () => {
+    // The descendant guard MUST NOT block tool events — they need to
+    // route to the matching delegate via subTaskIdIndex. This is the
+    // positive-path test that pairs with the negative-path guard test.
+    const t = fold(emptyTurn({ taskId: 'parent' }), [
+      evScope('task:start', { input: { id: 'parent' } }, 'parent'),
+      evScope(
+        'agent:plan_update',
+        {
+          taskId: 'parent',
+          steps: [{ id: 's1', label: 'R', status: 'pending', strategy: 'delegate-sub-agent' }],
+        },
+        'parent',
+      ),
+      evScope(
+        'workflow:delegate_dispatched',
+        { taskId: 'parent', stepId: 's1', subTaskId: 'child-x', agentId: 'r' },
+        'parent',
+      ),
+      evScope(
+        'agent:tool_started',
+        { taskId: 'child-x', toolCallId: 'tc-1', toolName: 'Read' },
+        'descendant',
+      ),
+      evScope(
+        'agent:tool_executed',
+        { taskId: 'child-x', toolCallId: 'tc-1', toolName: 'Read', durationMs: 3 },
+        'descendant',
+      ),
+    ]);
+    expect(t.toolCalls).toHaveLength(1);
+    expect(t.toolCalls[0]?.planStepId).toBe('s1');
+    expect(t.toolCalls[0]?.status).toBe('success');
+  });
+
+  test("descendant agent:turn_complete still accumulates child tokens onto parent", () => {
+    // turn_complete is intentionally NOT in PARENT_ONLY_LIFECYCLE_EVENTS —
+    // child token totals should roll up so the parent surface shows the
+    // total work done by every delegate.
+    const t = fold(emptyTurn({ taskId: 'parent' }), [
+      evScope('task:start', { input: { id: 'parent' } }, 'parent'),
+      evScope('agent:turn_complete', { taskId: 'child-x', tokensConsumed: 100 }, 'descendant'),
+      evScope('agent:turn_complete', { taskId: 'child-y', tokensConsumed: 50 }, 'descendant'),
+    ]);
+    expect(t.tokensConsumed).toBe(150);
+  });
+
+  test('events without scope (live SSE / legacy replay) are treated as parent', () => {
+    // Defensive: omitting scope must not regress live behaviour. The
+    // existing task:complete reducer behaviour stands.
+    const t = fold(emptyTurn({ taskId: 'task-1' }), [
+      ev('task:complete', { result: { id: 'task-1', status: 'completed', content: 'ok' } }),
+    ]);
+    expect(t.status).toBe('done');
+    expect(t.finalContent).toBe('ok');
+  });
+});

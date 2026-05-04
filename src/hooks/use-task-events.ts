@@ -9,6 +9,17 @@
  * Disabled by default: pass `enabled: true` only when the user opens the
  * "Process" disclosure on a historical message. This keeps `/messages`
  * page loads cheap — we only hit the events endpoint on demand.
+ *
+ * Descendants by default — historical replay calls
+ * `?includeDescendants=true&maxDepth=3` so the Multi-agent / Process
+ * Replay card can reconstruct each delegate row's persisted tool history.
+ * Sub-agents emit `agent:tool_*` under their own `taskId`, which the
+ * legacy per-task filter does not return; without descendants the card
+ * collapses to "Reasoning-only delegate — final answer captured…" even
+ * though tool calls actually happened. The maxDepth is bounded so a
+ * pathological delegation graph cannot inflate response size; the
+ * backend additionally caps at 64 tasks (TREE_TASKID_CAP) and surfaces
+ * `truncated: true` honestly.
  */
 import { useQuery } from '@tanstack/react-query';
 import { useMemo } from 'react';
@@ -17,7 +28,8 @@ import { replayProcessLog } from '@/lib/replay-process-log';
 import type { StreamingTurn } from '@/hooks/use-streaming-turn';
 
 export interface UseTaskEventsResult {
-  /** Raw events as returned by the backend, ordered by `seq` ascending. */
+  /** Raw events as returned by the backend, ordered ascending by `(ts, id)`
+   *  in descendants mode (or per-task `seq` in legacy mode). */
   events: Array<{
     id: string;
     taskId: string;
@@ -26,6 +38,8 @@ export interface UseTaskEventsResult {
     eventType: string;
     payload: Record<string, unknown>;
     ts: number;
+    /** Set in descendants mode. Legacy mode omits — reducer treats undefined as `'parent'`. */
+    scope?: 'parent' | 'descendant';
   }>;
   /** Reduced view ready for the chat UI, or `null` while loading. */
   turn: StreamingTurn | null;
@@ -33,16 +47,25 @@ export interface UseTaskEventsResult {
   error: unknown;
   /** True when the backend reports no recorder is wired (404). */
   unsupported: boolean;
+  /** Descendants mode — true when the resolver hit the 64-task cap server-side. */
+  truncated: boolean;
+  /** Descendants mode — discovered taskIds (parent + children). */
+  taskIds: string[];
 }
+
+const DEFAULT_MAX_DEPTH = 3;
 
 export function useTaskEvents(
   taskId: string | undefined,
-  options: { enabled?: boolean } = {},
+  options: { enabled?: boolean; includeDescendants?: boolean; maxDepth?: number } = {},
 ): UseTaskEventsResult {
   const enabled = (options.enabled ?? true) && Boolean(taskId);
+  const includeDescendants = options.includeDescendants ?? true;
+  const maxDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
   const query = useQuery({
-    queryKey: ['task-event-history', taskId],
-    queryFn: () => api.getTaskEventHistory(taskId!),
+    queryKey: ['task-event-history', taskId, includeDescendants, maxDepth],
+    queryFn: () =>
+      api.getTaskEventHistory(taskId!, { includeDescendants, maxDepth }),
     enabled,
     // Past tasks are immutable — the event log never gets new entries
     // once the task has terminated. Long staleTime + no refetch on focus
@@ -69,5 +92,7 @@ export function useTaskEvents(
     isLoading: query.isLoading,
     error: status === 404 ? null : query.error,
     unsupported: status === 404,
+    truncated: query.data?.truncated ?? false,
+    taskIds: query.data?.taskIds ?? (taskId ? [taskId] : []),
   };
 }
