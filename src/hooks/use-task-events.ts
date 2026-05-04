@@ -67,9 +67,13 @@ export function useTaskEvents(
     queryFn: () =>
       api.getTaskEventHistory(taskId!, { includeDescendants, maxDepth }),
     enabled,
-    // Past tasks are immutable — the event log never gets new entries
-    // once the task has terminated. Long staleTime + no refetch on focus
-    // mirrors that.
+    // Once a task terminates the event log is immutable, so a long
+    // staleTime + no refetch on focus is the right steady-state
+    // behaviour. The mid-execution case is handled by `use-sse-sync`,
+    // which invalidates this query on the same reconcile triggers as
+    // the projection — without that, opening the historical Process
+    // Replay card mid-run would show a frozen plan checklist (the
+    // events array is a partial snapshot until the next refetch).
     staleTime: 5 * 60_000,
     refetchOnWindowFocus: false,
     // Surface 404 (no DB / no recorder) as a soft "unsupported" signal

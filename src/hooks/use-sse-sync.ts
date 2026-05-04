@@ -41,6 +41,22 @@ export function useSSESync({ enabled }: UseSSESyncOptions) {
       // `useTaskProcessState(taskId)` consumer (drawer / historical
       // card / coding-cli card) refetches and replaces optimistic
       // state with backend authority.
+      //
+      // We also invalidate `task-event-history` for the same taskId.
+      // The historical Process Replay card folds the persisted event
+      // log through `reduceTurn` to render plan steps and timeline;
+      // its query has `staleTime: 5min` and `refetchOnWindowFocus:
+      // false` (past tasks are immutable in steady state). But when
+      // the user opens the card mid-execution, the cached events
+      // array is a partial snapshot — without an explicit refetch
+      // on the same triggers as the projection, the plan checklist
+      // freezes at whatever was emitted before the cache landed
+      // (e.g. last-step rendering as still pending after the task
+      // already completed; concrete repro: session
+      // de93426c-6241-4ab7-95e1-9c7ca54e09d1, synth-coordinator stuck
+      // on `pending` even though the durable log has `step_complete`
+      // + `task:complete`). React Query dedupes any overlap with the
+      // projection refetch.
       if (isReconcileTriggerEvent(event.event, event.payload as Record<string, unknown> | null)) {
         const taskId = extractTaskIdFromPayload(event.payload);
         if (taskId) {
@@ -48,11 +64,16 @@ export function useSSESync({ enabled }: UseSSESyncOptions) {
             queryKey: ['task-process-state', taskId],
             refetchType: 'active',
           });
+          queryClient.invalidateQueries({
+            queryKey: ['task-event-history', taskId],
+            refetchType: 'active',
+          });
         } else {
           // Trigger event without a taskId — shouldn't happen for the
           // canonical set, but if it does, fall back to a partial-key
           // invalidation. React Query dedupes overlapping refetches.
           queryClient.invalidateQueries({ queryKey: ['task-process-state'], refetchType: 'active' });
+          queryClient.invalidateQueries({ queryKey: ['task-event-history'], refetchType: 'active' });
         }
       }
 
